@@ -1,50 +1,90 @@
-# Welcome to your Expo app 👋
+# YTCash - Digital Wallet App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A GCash-style digital wallet app for Filipinos with AI-powered multi-currency cash scanning. Built with React Native + Expo, Supabase, Stripe, and Roboflow.
 
-## Get started
+## Features
 
-1. Install dependencies
+- **Digital Wallet** — Balance management in PHP with real-time updates
+- **P2P Transfers** — Send/receive money via email or phone number
+- **Cash Scanner** — AI-powered banknote detection (PHP, USD, EUR, AED) with auto PHP conversion
+- **QR Payments** — Scan and generate QR codes for payments
+- **Multi-Currency** — Live exchange rates and automatic PHP conversion
+- **Secure Auth** — Email/password and phone OTP authentication via Supabase
 
-   ```bash
-   npm install
-   ```
+## Tech Stack
 
-2. Start the app
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React Native + Expo SDK 54 (TypeScript) |
+| Routing | expo-router (file-based) |
+| Backend | Supabase (Auth, Database, Realtime) |
+| Payments | Stripe SDK |
+| Cash Detection | Roboflow API (currency-note-detection model) |
+| Exchange Rates | ExchangeRate-API |
 
-   ```bash
-   npx expo start
-   ```
+## Getting Started
 
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+### 1. Install dependencies
 
 ```bash
-npm run reset-project
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### 2. Set up environment variables
 
-## Learn more
+Copy `.env.example` to `.env` and fill in your keys:
 
-To learn more about developing your project with Expo, look at the following resources:
+```bash
+cp .env.example .env
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Required keys:
+- `EXPO_PUBLIC_SUPABASE_URL` — Your Supabase project URL
+- `EXPO_PUBLIC_SUPABASE_ANON_KEY` — Your Supabase anon/public key
+- `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` — Stripe publishable key (pk_test_...)
+- `EXPO_PUBLIC_ROBOFLOW_API_KEY` — Roboflow API key for cash detection
+- `EXPO_PUBLIC_EXCHANGE_RATE_API_KEY` — ExchangeRate-API key
 
-## Join the community
+### 3. Set up Supabase database
 
-Join our community of developers creating universal apps.
+Run the SQL in `supabase/migration.sql` in your Supabase SQL Editor to create tables, RLS policies, and functions.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+### 4. Start the app
+
+```bash
+npx expo start
+```
+
+Scan the QR code with Expo Go (iOS/Android) or press `a` for Android / `i` for iOS simulator.
+
+## Project Structure
+
+```
+app/
+  _layout.tsx          Root layout (auth provider, route protection)
+  (auth)/              Auth screens (login, register)
+  (tabs)/              Main tab screens (home, send, scan, history)
+  profile.tsx          User profile
+  qr-scanner.tsx       QR code scanner
+  add-money.tsx        Add funds via Stripe
+contexts/
+  auth.tsx             Authentication context & provider
+services/
+  supabase.ts          Database client & helpers
+  currency-api.ts      Exchange rate fetching & conversion
+  cash-scanner.ts      Roboflow ML integration
+constants/
+  theme.ts             Colors & branding
+  currencies.ts        Currency definitions & formatting
+supabase/
+  migration.sql        Database schema & RLS policies
+```
+
+## Supported Currencies
+
+| Currency | Detection | Conversion |
+|----------|-----------|------------|
+| PHP (Philippine Peso) | Yes | Base currency |
+| USD (US Dollar) | Yes | Auto-convert to PHP |
+| EUR (Euro) | Yes | Auto-convert to PHP |
+| AED (UAE Dirham) | Yes | Auto-convert to PHP |
