@@ -1,3 +1,5 @@
+import * as FileSystem from 'expo-file-system';
+
 const ROBOFLOW_API_KEY = process.env.EXPO_PUBLIC_ROBOFLOW_API_KEY ?? '';
 const ROBOFLOW_MODEL_URL = 'https://detect.roboflow.com/currency-note-detection-hmfqa/1';
 
@@ -96,17 +98,10 @@ export function aggregateNotes(notes: DetectedNote[]): Record<string, number> {
 
 /**
  * Convert a local image URI to a base64 string for sending to the API.
+ * Uses expo-file-system instead of FileReader (Web API unavailable on native).
  */
 export async function imageToBase64(uri: string): Promise<string> {
-  const response = await fetch(uri);
-  const blob = await response.blob();
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64 = (reader.result as string).split(',')[1];
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
+  return await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64,
   });
 }

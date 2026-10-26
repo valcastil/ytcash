@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    {
+      "id": "assets_images_partial_react_logo_partial_react_logo",
+      "label": "Partial React Logo Image",
+      "file_type": "image",
+      "source_file": "Z:\\Coding\\YTCash\\YTCash\\assets\\images\\partial-react-logo.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "coverage": {
+    "Z:\\Coding\\YTCash\\YTCash\\assets\\images\\partial-react-logo.png": 0
+  }
+}
