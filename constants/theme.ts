@@ -1,58 +1,95 @@
 import { Platform } from 'react-native';
 
-const tintColorLight = '#F7931A';
-const tintColorDark = '#FFB84D';
+// Official Bitcoin Brand Colors & Modern Crypto Theme Palette
+export const BitcoinColors = {
+  orange: '#F7931A',       // The iconic Bitcoin Orange
+  orangeDark: '#E8850D',   // Deep amber orange
+  orangeLight: '#FFA940',  // Bright amber
+  gold: '#FFD700',         // Satoshi gold
+  goldMuted: '#B8860B',    // Dark goldenrod
+  lightning: '#FFD026',    // Lightning yellow
+
+  // Dark Matrix / Obsidian Carbon
+  void: '#07090E',         // Deepest background
+  darkBg: '#0B0E14',       // Primary background
+  cardBg: '#121722',       // Surface / card background
+  cardElevated: '#171E2C', // Higher elevation card
+  border: '#1F2738',       // Subtle border
+  borderGlow: 'rgba(247, 147, 26, 0.35)', // Glowing border
+  borderGold: 'rgba(255, 215, 0, 0.25)',
+
+  // Accents
+  green: '#10B981',        // Confirmed / Receive green
+  greenGlow: 'rgba(16, 185, 129, 0.2)',
+  red: '#F43F5E',          // Send / Outgoing red
+  cyan: '#06B6D4',         // Tech cyan
+
+  // Neutrals & Text
+  textPrimary: '#FFFFFF',
+  textSecondary: '#94A3B8',
+  textMuted: '#64748B',
+  surfaceLight: 'rgba(255, 255, 255, 0.05)',
+  surfaceHighlight: 'rgba(247, 147, 26, 0.08)',
+};
 
 export const Colors = {
   light: {
-    text: '#1A1A2E',
-    background: '#F5F5F5',
-    tint: tintColorLight,
-    icon: '#6B7280',
-    tabIconDefault: '#6B7280',
-    tabIconSelected: tintColorLight,
+    text: '#0F172A',
+    background: '#F8FAFC',
+    tint: BitcoinColors.orange,
+    icon: '#64748B',
+    tabIconDefault: '#94A3B8',
+    tabIconSelected: BitcoinColors.orange,
     card: '#FFFFFF',
-    border: '#E5E7EB',
-    success: '#22C55E',
-    error: '#EF4444',
-    warning: '#F59E0B',
+    border: '#E2E8F0',
+    cardElevated: '#F1F5F9',
+    success: BitcoinColors.green,
+    error: BitcoinColors.red,
+    warning: BitcoinColors.orange,
   },
   dark: {
-    text: '#F3F4F6',
-    background: '#0F0F0F',
-    tint: tintColorDark,
-    icon: '#9CA3AF',
-    tabIconDefault: '#9CA3AF',
-    tabIconSelected: tintColorDark,
-    card: '#1A1A2E',
-    border: '#2D2D3F',
-    success: '#22C55E',
-    error: '#EF4444',
-    warning: '#F59E0B',
+    text: BitcoinColors.textPrimary,
+    background: BitcoinColors.darkBg,
+    tint: BitcoinColors.orange,
+    icon: BitcoinColors.textSecondary,
+    tabIconDefault: '#64748B',
+    tabIconSelected: BitcoinColors.orange,
+    card: BitcoinColors.cardBg,
+    cardElevated: BitcoinColors.cardElevated,
+    border: BitcoinColors.border,
+    success: BitcoinColors.green,
+    error: BitcoinColors.red,
+    warning: BitcoinColors.orange,
   },
 };
 
 export const Brand = {
-  primary: '#F7931A',
-  primaryDark: '#E8850D',
-  primaryLight: '#FFB84D',
-  accent: '#FFD700',
-  gradient: ['#F7931A', '#E8850D'] as const,
-  gradientDark: ['#1A1A2E', '#0F0F0F'] as const,
-  gradientAccent: ['#FFD700', '#F7931A'] as const,
-  dark: '#1A1A2E',
-  darkDeep: '#0F0F0F',
+  primary: BitcoinColors.orange,
+  primaryDark: BitcoinColors.orangeDark,
+  primaryLight: BitcoinColors.orangeLight,
+  accent: BitcoinColors.gold,
+  lightning: BitcoinColors.lightning,
+  dark: BitcoinColors.darkBg,
+  card: BitcoinColors.cardBg,
+  cardElevated: BitcoinColors.cardElevated,
+  border: BitcoinColors.border,
+  borderGlow: BitcoinColors.borderGlow,
+
+  // Gradients
+  gradient: [BitcoinColors.orange, BitcoinColors.orangeDark] as const,
+  gradientGold: [BitcoinColors.gold, BitcoinColors.orange] as const,
+  gradientDark: [BitcoinColors.cardBg, BitcoinColors.darkBg] as const,
+  gradientCard: [BitcoinColors.cardElevated, BitcoinColors.cardBg] as const,
+  gradientHero: ['#1E160A', BitcoinColors.cardBg] as const,
+  gradientGlow: ['rgba(247, 147, 26, 0.25)', 'rgba(18, 23, 34, 0.95)'] as const,
+  gradientButton: ['#FF9F1C', '#F7931A'] as const,
 };
 
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
     sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
     serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
     rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
     mono: 'ui-monospace',
   },
   default: {

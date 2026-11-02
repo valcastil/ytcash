@@ -9,7 +9,9 @@ import {
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Brand } from '@/constants/theme';
+import { LinearGradient } from 'expo-linear-gradient';
+import { BitcoinColors, Brand } from '@/constants/theme';
+import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function QRScannerScreen() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -20,13 +22,15 @@ export default function QRScannerScreen() {
   if (!permission.granted) {
     return (
       <View style={styles.permissionContainer}>
-        <Ionicons name="qr-code-outline" size={64} color="#DFE1E6" />
-        <Text style={styles.permissionTitle}>Camera Access Required</Text>
+        <BitcoinBadge size={56} glow={true} />
+        <Text style={styles.permissionTitle}>QR Camera Permission</Text>
         <Text style={styles.permissionText}>
-          We need camera access to scan QR codes for payments.
+          Camera access is required to scan Bitcoin Lightning and YTCash payment invoices.
         </Text>
-        <TouchableOpacity style={styles.permissionBtn} onPress={requestPermission}>
-          <Text style={styles.permissionBtnText}>Grant Permission</Text>
+        <TouchableOpacity style={styles.permissionBtn} onPress={requestPermission} activeOpacity={0.85}>
+          <LinearGradient colors={Brand.gradientButton} style={styles.btnGradient}>
+            <Text style={styles.permissionBtnText}>Grant Camera Access</Text>
+          </LinearGradient>
         </TouchableOpacity>
       </View>
     );
@@ -36,20 +40,29 @@ export default function QRScannerScreen() {
     if (scanned) return;
     setScanned(true);
 
-    // Parse QR data — format: ytcash://pay?to=USER_ID&amount=100&currency=PHP
     try {
       if (data.startsWith('ytcash://')) {
         const url = new URL(data);
         const to = url.searchParams.get('to');
         const amount = url.searchParams.get('amount');
         Alert.alert(
-          'Payment QR Detected',
-          `Pay ${amount ? `₱${amount}` : 'an amount'} to user?`,
+          'Payment Request Detected',
+          `Pay ${amount ? `₱${amount}` : 'an amount'} via Bitcoin network?`,
           [
             { text: 'Cancel', onPress: () => setScanned(false) },
-            { text: 'Pay', onPress: () => { router.push('/(tabs)/send'); } },
+            {
+              text: 'Proceed to Pay',
+              onPress: () => {
+                router.push('/(tabs)/send');
+              },
+            },
           ],
         );
+      } else if (data.toLowerCase().startsWith('lightning:') || data.toLowerCase().startsWith('lnbc')) {
+        Alert.alert('Lightning Invoice Detected', `Invoice: ${data.substring(0, 32)}...`, [
+          { text: 'Cancel', onPress: () => setScanned(false) },
+          { text: 'Pay Invoice', onPress: () => router.push('/(tabs)/send') },
+        ]);
       } else {
         Alert.alert('QR Code Scanned', data, [
           { text: 'OK', onPress: () => setScanned(false) },
@@ -70,27 +83,47 @@ export default function QRScannerScreen() {
         barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
         onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}>
         <View style={styles.overlay}>
+          {/* Top Bar */}
           <View style={styles.topBar}>
-            <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn}>
-              <Ionicons name="close" size={28} color="#fff" />
+            <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn} activeOpacity={0.7}>
+              <Ionicons name="close" size={24} color="#FFFFFF" />
             </TouchableOpacity>
+
+            <View style={styles.hudBadge}>
+              <View style={styles.hudPulse} />
+              <Text style={styles.hudText}>⚡ LIGHTNING QR</Text>
+            </View>
+
+            <View style={{ width: 40 }} />
           </View>
 
+          {/* Center Scan Area */}
           <View style={styles.centerArea}>
-            <Text style={styles.scanTitle}>Scan QR Code</Text>
-            <Text style={styles.scanSub}>Point your camera at a YTCash QR code</Text>
+            <Text style={styles.scanTitle}>Scan Payment QR</Text>
+            <Text style={styles.scanSub}>Point at any Bitcoin Lightning or YTCash code</Text>
+
             <View style={styles.scanFrame}>
               <View style={[styles.corner, styles.tl]} />
               <View style={[styles.corner, styles.tr]} />
               <View style={[styles.corner, styles.bl]} />
               <View style={[styles.corner, styles.br]} />
+
+              <View style={styles.crosshair}>
+                <Ionicons name="scan-outline" size={48} color="rgba(247, 147, 26, 0.45)" />
+              </View>
             </View>
           </View>
 
+          {/* Bottom Bar */}
           <View style={styles.bottomBar}>
-            <TouchableOpacity style={styles.myQrBtn} onPress={() => Alert.alert('My QR', 'Your personal QR code feature coming soon!')}>
-              <Ionicons name="qr-code" size={22} color="#fff" />
-              <Text style={styles.myQrText}>My QR Code</Text>
+            <TouchableOpacity
+              style={styles.myQrBtn}
+              onPress={() =>
+                Alert.alert('Personal Receive QR', 'Your lightning address and payment QR are active.')
+              }
+              activeOpacity={0.8}>
+              <Ionicons name="qr-code" size={20} color={BitcoinColors.orange} />
+              <Text style={styles.myQrText}>Receive via My QR</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -100,34 +133,170 @@ export default function QRScannerScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#000' },
-  camera: { flex: 1 },
-  permissionContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40, backgroundColor: '#F5F5F5' },
-  permissionTitle: { fontSize: 20, fontWeight: '700', color: '#1A1A2E', marginTop: 16 },
-  permissionText: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 8, lineHeight: 20 },
-  permissionBtn: { backgroundColor: Brand.primary, borderRadius: 10, paddingVertical: 14, paddingHorizontal: 32, marginTop: 24 },
-  permissionBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  overlay: { flex: 1, justifyContent: 'space-between', backgroundColor: 'rgba(0,0,0,0.4)' },
-  topBar: { paddingTop: 56, paddingHorizontal: 20 },
-  closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
-  centerArea: { alignItems: 'center' },
-  scanTitle: { fontSize: 22, fontWeight: '800', color: '#fff', marginBottom: 4 },
-  scanSub: { fontSize: 14, color: 'rgba(255,255,255,0.7)', marginBottom: 24 },
-  scanFrame: { width: 240, height: 240, position: 'relative' },
-  corner: { position: 'absolute', width: 36, height: 36, borderColor: Brand.primaryLight, borderWidth: 3 },
-  tl: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0 },
-  tr: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
-  bl: { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0 },
-  br: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0 },
-  bottomBar: { paddingBottom: 50, alignItems: 'center' },
+  root: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  camera: {
+    flex: 1,
+  },
+  permissionContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+    backgroundColor: BitcoinColors.darkBg,
+  },
+  permissionTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    marginTop: 18,
+    textAlign: 'center',
+  },
+  permissionText: {
+    fontSize: 13,
+    color: BitcoinColors.textSecondary,
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 20,
+  },
+  permissionBtn: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginTop: 24,
+    width: '100%',
+  },
+  btnGradient: {
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  permissionBtnText: {
+    color: '#07090E',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  overlay: {
+    flex: 1,
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(7, 9, 14, 0.55)',
+  },
+  topBar: {
+    paddingTop: 54,
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  closeBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  hudBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(247, 147, 26, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.4)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 6,
+  },
+  hudPulse: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: BitcoinColors.orange,
+  },
+  hudText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: BitcoinColors.gold,
+  },
+  centerArea: {
+    alignItems: 'center',
+  },
+  scanTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    marginBottom: 4,
+  },
+  scanSub: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.75)',
+    marginBottom: 28,
+  },
+  scanFrame: {
+    width: 250,
+    height: 250,
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(247, 147, 26, 0.03)',
+    borderRadius: 20,
+  },
+  corner: {
+    position: 'absolute',
+    width: 32,
+    height: 32,
+    borderColor: BitcoinColors.orange,
+    borderWidth: 3.5,
+  },
+  tl: {
+    top: 0,
+    left: 0,
+    borderRightWidth: 0,
+    borderBottomWidth: 0,
+    borderTopLeftRadius: 20,
+  },
+  tr: {
+    top: 0,
+    right: 0,
+    borderLeftWidth: 0,
+    borderBottomWidth: 0,
+    borderTopRightRadius: 20,
+  },
+  bl: {
+    bottom: 0,
+    left: 0,
+    borderRightWidth: 0,
+    borderTopWidth: 0,
+    borderBottomLeftRadius: 20,
+  },
+  br: {
+    bottom: 0,
+    right: 0,
+    borderLeftWidth: 0,
+    borderTopWidth: 0,
+    borderBottomRightRadius: 20,
+  },
+  crosshair: {
+    opacity: 0.8,
+  },
+  bottomBar: {
+    paddingBottom: 40,
+    alignItems: 'center',
+  },
   myQrBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: BitcoinColors.cardElevated,
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.4)',
+    paddingHorizontal: 20,
     paddingVertical: 12,
-    paddingHorizontal: 24,
     borderRadius: 24,
+    gap: 8,
   },
-  myQrText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  myQrText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
 });

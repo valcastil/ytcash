@@ -1,13 +1,24 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import 'react-native-reanimated';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider, useAuth } from '@/contexts/auth';
-import { Brand } from '@/constants/theme';
+import { Brand, BitcoinColors } from '@/constants/theme';
+
+const BitcoinNavTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    primary: BitcoinColors.orange,
+    background: BitcoinColors.darkBg,
+    card: BitcoinColors.cardBg,
+    text: BitcoinColors.textPrimary,
+    border: BitcoinColors.border,
+  },
+};
 
 function AuthGate() {
   const { session, loading } = useAuth();
@@ -18,8 +29,9 @@ function AuthGate() {
     if (loading) return;
 
     const inAuthGroup = segments[0] === '(auth)';
+    const isCallback = (segments[0] as string) === 'auth';
 
-    if (!session && !inAuthGroup) {
+    if (!session && !inAuthGroup && !isCallback) {
       router.replace('/(auth)/login');
     } else if (session && inAuthGroup) {
       router.replace('/(tabs)');
@@ -28,15 +40,22 @@ function AuthGate() {
 
   if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F5F5F5' }}>
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: BitcoinColors.darkBg }}>
         <ActivityIndicator size="large" color={Brand.primary} />
       </View>
     );
   }
 
   return (
-    <Stack>
+    <Stack
+      screenOptions={{
+        headerStyle: { backgroundColor: BitcoinColors.cardBg },
+        headerTintColor: BitcoinColors.orange,
+        headerTitleStyle: { color: '#FFFFFF', fontWeight: '700' },
+        contentStyle: { backgroundColor: BitcoinColors.darkBg },
+      }}>
       <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+      <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="profile" options={{ headerShown: false }} />
       <Stack.Screen name="qr-scanner" options={{ headerShown: false, presentation: 'fullScreenModal' }} />
@@ -46,11 +65,9 @@ function AuthGate() {
 }
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
-
   return (
     <AuthProvider>
-      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+      <ThemeProvider value={BitcoinNavTheme}>
         <AuthGate />
         <StatusBar style="light" />
       </ThemeProvider>

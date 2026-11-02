@@ -102,6 +102,6 @@ export function aggregateNotes(notes: DetectedNote[]): Record<string, number> {
  */
 export async function imageToBase64(uri: string): Promise<string> {
   return await FileSystem.readAsStringAsync(uri, {
-    encoding: FileSystem.EncodingType.Base64,
+    encoding: 'base64' as any,
   });
 }

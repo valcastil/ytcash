@@ -10,15 +10,16 @@ import {
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
-import { Brand } from '@/constants/theme';
-import { formatCurrency } from '@/constants/currencies';
+import { BitcoinColors } from '@/constants/theme';
+import { formatCurrency, phpToSats } from '@/constants/currencies';
+import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function ProfileScreen() {
   const { user, profile, signOut } = useAuth();
   const [loggingOut, setLoggingOut] = useState(false);
 
   async function handleLogout() {
-    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+    Alert.alert('Sign Out', 'Are you sure you want to sign out of your wallet?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Sign Out',
@@ -38,153 +39,252 @@ export default function ProfileScreen() {
   }
 
   const menuItems = [
-    { icon: 'person-outline' as const, label: 'Personal Information', onPress: () => {} },
-    { icon: 'shield-checkmark-outline' as const, label: 'KYC Verification', badge: profile?.kyc_verified ? 'Verified' : 'Pending', onPress: () => {} },
-    { icon: 'card-outline' as const, label: 'Payment Methods', onPress: () => {} },
-    { icon: 'notifications-outline' as const, label: 'Notifications', onPress: () => {} },
-    { icon: 'lock-closed-outline' as const, label: 'Security & Privacy', onPress: () => {} },
+    { icon: 'shield-checkmark-outline' as const, label: 'Wallet Verification', badge: profile?.kyc_verified ? 'Verified' : 'Pending', onPress: () => {} },
+    { icon: 'key-outline' as const, label: 'Backup & Recovery Key', badge: 'Active', onPress: () => {} },
+    { icon: 'flash-outline' as const, label: 'Lightning Channels', badge: 'Connected', onPress: () => {} },
+    { icon: 'card-outline' as const, label: 'Linked Payment Methods', onPress: () => {} },
+    { icon: 'notifications-outline' as const, label: 'Ledger Notifications', onPress: () => {} },
+    { icon: 'lock-closed-outline' as const, label: 'Security & Biometrics', onPress: () => {} },
     { icon: 'help-circle-outline' as const, label: 'Help & Support', onPress: () => {} },
-    { icon: 'document-text-outline' as const, label: 'Terms & Conditions', onPress: () => {} },
-    { icon: 'information-circle-outline' as const, label: 'About YTCash', onPress: () => {} },
+    { icon: 'document-text-outline' as const, label: 'Legal & Privacy', onPress: () => {} },
   ];
 
+  const balance = profile?.balance ?? 0;
+  const sats = phpToSats(balance);
+
   return (
-    <ScrollView style={styles.root}>
+    <ScrollView style={styles.root} contentContainerStyle={styles.scroll}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={24} color="#fff" />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
+          <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Profile</Text>
+        <Text style={styles.headerTitle}>Account & Security</Text>
         <View style={{ width: 32 }} />
       </View>
 
       {/* Avatar Card */}
       <View style={styles.avatarCard}>
-        <View style={styles.avatarCircle}>
-          <Ionicons name="person" size={40} color={Brand.primary} />
+        <View style={styles.avatarWrapper}>
+          <BitcoinBadge size={72} glow={true} />
         </View>
-        <Text style={styles.userName}>{profile?.full_name ?? 'User'}</Text>
+        <Text style={styles.userName}>{profile?.full_name ?? 'Bitcoin Holder'}</Text>
         <Text style={styles.userEmail}>{user?.email ?? ''}</Text>
-        <View style={styles.balanceRow}>
-          <Text style={styles.balanceLabel}>Balance: </Text>
-          <Text style={styles.balanceValue}>{formatCurrency(profile?.balance ?? 0)}</Text>
+
+        <View style={styles.balancePill}>
+          <Text style={styles.balanceLabel}>Total Balance: </Text>
+          <Text style={styles.balanceValue}>{formatCurrency(balance)}</Text>
+          <Text style={styles.balanceSats}> • {sats.toLocaleString()} sats</Text>
         </View>
       </View>
 
-      {/* Menu */}
+      {/* Menu List */}
       <View style={styles.menu}>
         {menuItems.map((item, i) => (
-          <TouchableOpacity key={i} style={styles.menuItem} onPress={item.onPress}>
-            <Ionicons name={item.icon} size={22} color="#6B7280" />
+          <TouchableOpacity key={i} style={styles.menuItem} onPress={item.onPress} activeOpacity={0.75}>
+            <View style={styles.menuIconWrap}>
+              <Ionicons name={item.icon} size={20} color={BitcoinColors.orange} />
+            </View>
             <Text style={styles.menuLabel}>{item.label}</Text>
             <View style={styles.menuRight}>
               {item.badge && (
-                <View style={[styles.badge, item.badge === 'Verified' ? styles.badgeGreen : styles.badgeYellow]}>
-                  <Text style={[styles.badgeText, item.badge === 'Verified' ? styles.badgeTextGreen : styles.badgeTextYellow]}>
+                <View
+                  style={[
+                    styles.badge,
+                    item.badge === 'Verified' || item.badge === 'Active' || item.badge === 'Connected'
+                      ? styles.badgeGreen
+                      : styles.badgeYellow,
+                  ]}>
+                  <Text
+                    style={[
+                      styles.badgeText,
+                      item.badge === 'Verified' || item.badge === 'Active' || item.badge === 'Connected'
+                        ? styles.badgeTextGreen
+                        : styles.badgeTextYellow,
+                    ]}>
                     {item.badge}
                   </Text>
                 </View>
               )}
-              <Ionicons name="chevron-forward" size={18} color="#DFE1E6" />
+              <Ionicons name="chevron-forward" size={16} color={BitcoinColors.textMuted} />
             </View>
           </TouchableOpacity>
         ))}
       </View>
 
       {/* Logout */}
-      <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} disabled={loggingOut}>
-        <Ionicons name="log-out-outline" size={22} color="#FF5630" />
-        <Text style={styles.logoutText}>{loggingOut ? 'Signing out...' : 'Sign Out'}</Text>
+      <TouchableOpacity
+        style={styles.logoutBtn}
+        onPress={handleLogout}
+        disabled={loggingOut}
+        activeOpacity={0.8}>
+        <Ionicons name="log-out-outline" size={20} color={BitcoinColors.red} />
+        <Text style={styles.logoutText}>{loggingOut ? 'Signing out...' : 'Sign Out of Wallet'}</Text>
       </TouchableOpacity>
 
-      <Text style={styles.version}>YTCash v1.0.0</Text>
+      <Text style={styles.version}>YTCash • Bitcoin Layer 2 Powered • v1.0.0</Text>
       <View style={{ height: 40 }} />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#F5F5F5' },
+  root: {
+    flex: 1,
+    backgroundColor: BitcoinColors.darkBg,
+  },
+  scroll: {
+    paddingBottom: 30,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 56,
+    paddingTop: 54,
     paddingHorizontal: 20,
     paddingBottom: 16,
-    backgroundColor: Brand.primary,
+    backgroundColor: BitcoinColors.cardBg,
+    borderBottomWidth: 1,
+    borderBottomColor: BitcoinColors.border,
   },
-  backBtn: { padding: 4 },
-  headerTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
+  backBtn: {
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
   avatarCard: {
-    backgroundColor: '#fff',
+    backgroundColor: BitcoinColors.cardBg,
     marginHorizontal: 20,
     marginTop: 20,
-    borderRadius: 16,
+    borderRadius: 22,
     padding: 24,
     alignItems: 'center',
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.3)',
   },
-  avatarCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#FFF3E0',
-    justifyContent: 'center',
+  avatarWrapper: {
+    marginBottom: 14,
+  },
+  userName: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  userEmail: {
+    fontSize: 13,
+    color: BitcoinColors.textSecondary,
+    marginTop: 4,
+  },
+  balancePill: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    backgroundColor: 'rgba(247, 147, 26, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.25)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    marginTop: 14,
   },
-  userName: { fontSize: 20, fontWeight: '700', color: '#1A1A2E' },
-  userEmail: { fontSize: 14, color: '#6B7280', marginTop: 4 },
-  balanceRow: { flexDirection: 'row', marginTop: 12 },
-  balanceLabel: { fontSize: 14, color: '#6B7280' },
-  balanceValue: { fontSize: 14, fontWeight: '700', color: '#1A1A2E' },
+  balanceLabel: {
+    fontSize: 12,
+    color: BitcoinColors.textSecondary,
+  },
+  balanceValue: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  balanceSats: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: BitcoinColors.gold,
+  },
   menu: {
-    backgroundColor: '#fff',
+    backgroundColor: BitcoinColors.cardBg,
     marginHorizontal: 20,
     marginTop: 20,
-    borderRadius: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
     overflow: 'hidden',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 16,
-    paddingHorizontal: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#F5F5F5',
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
   },
-  menuLabel: { flex: 1, fontSize: 15, color: '#1A1A2E', marginLeft: 14 },
-  menuRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  badge: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
-  badgeGreen: { backgroundColor: '#E3FCEF' },
-  badgeYellow: { backgroundColor: '#FFFAE6' },
-  badgeText: { fontSize: 11, fontWeight: '600' },
-  badgeTextGreen: { color: '#36B37E' },
-  badgeTextYellow: { color: '#FFAB00' },
+  menuIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(247, 147, 26, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  menuLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  menuRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  badgeGreen: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+  },
+  badgeYellow: {
+    backgroundColor: 'rgba(247, 147, 26, 0.15)',
+  },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  badgeTextGreen: {
+    color: '#10B981',
+  },
+  badgeTextYellow: {
+    color: BitcoinColors.orange,
+  },
   logoutBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
     marginHorizontal: 20,
-    marginTop: 20,
-    borderRadius: 12,
-    paddingVertical: 16,
-    gap: 10,
+    marginTop: 24,
+    paddingVertical: 14,
+    backgroundColor: 'rgba(244, 63, 94, 0.1)',
     borderWidth: 1,
-    borderColor: '#FEE2E2',
+    borderColor: 'rgba(244, 63, 94, 0.25)',
+    borderRadius: 16,
+    gap: 8,
   },
-  logoutText: { fontSize: 15, fontWeight: '600', color: '#FF5630' },
-  version: { textAlign: 'center', fontSize: 12, color: '#97A0AF', marginTop: 20 },
+  logoutText: {
+    color: BitcoinColors.red,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  version: {
+    textAlign: 'center',
+    fontSize: 11,
+    color: BitcoinColors.textMuted,
+    marginTop: 20,
+  },
 });

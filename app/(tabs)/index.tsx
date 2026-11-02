@@ -6,22 +6,29 @@ import {
   ScrollView,
   TouchableOpacity,
   RefreshControl,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
-import { Brand, Colors } from '@/constants/theme';
-import { CURRENCIES, formatCurrency } from '@/constants/currencies';
+import { BitcoinColors, Brand } from '@/constants/theme';
+import {
+  CURRENCIES,
+  formatCurrency,
+  phpToBtc,
+  phpToSats,
+  APPROX_PHP_PER_BTC,
+} from '@/constants/currencies';
 import { getTransactions, type Transaction } from '@/services/supabase';
 import { fetchExchangeRates, type ExchangeRates } from '@/services/currency-api';
+import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function HomeScreen() {
   const { user, profile, refreshProfile } = useAuth();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [rates, setRates] = useState<ExchangeRates | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [displayMode, setDisplayMode] = useState<'fiat' | 'sats'>('fiat');
 
   const loadData = useCallback(async () => {
     if (!user) return;
@@ -48,86 +55,248 @@ export default function HomeScreen() {
   }, [loadData, refreshProfile]);
 
   const balance = profile?.balance ?? 0;
+  const btcBalance = phpToBtc(balance);
+  const satsBalance = phpToSats(balance);
 
   const quickActions = [
-    { key: 'send', icon: 'paper-plane' as const, label: 'Send', route: '/(tabs)/send', color: '#22C55E' },
-    { key: 'scan', icon: 'camera' as const, label: 'Scan Cash', route: '/(tabs)/scan', color: '#F7931A' },
-    { key: 'qr', icon: 'qr-code' as const, label: 'QR Pay', route: '/qr-scanner', color: '#E8850D' },
-    { key: 'add', icon: 'add-circle' as const, label: 'Add Money', route: '/add-money', color: '#F7931A' },
+    {
+      key: 'send',
+      icon: 'arrow-up' as const,
+      label: 'Send',
+      sub: 'Transfer',
+      route: '/(tabs)/send',
+      color: BitcoinColors.orange,
+    },
+    {
+      key: 'scan',
+      icon: 'camera' as const,
+      label: 'Scan Cash',
+      sub: 'Digitize',
+      route: '/(tabs)/scan',
+      color: '#10B981',
+    },
+    {
+      key: 'qr',
+      icon: 'qr-code' as const,
+      label: 'QR Pay',
+      sub: 'Invoice',
+      route: '/qr-scanner',
+      color: BitcoinColors.lightning,
+    },
+    {
+      key: 'add',
+      icon: 'add' as const,
+      label: 'Deposit',
+      sub: 'Top Up',
+      route: '/add-money',
+      color: '#06B6D4',
+    },
   ];
 
   function txIcon(type: string) {
     switch (type) {
-      case 'send': return 'arrow-up-circle';
-      case 'receive': return 'arrow-down-circle';
-      case 'scan': return 'camera';
-      case 'add': return 'add-circle';
-      default: return 'swap-horizontal';
+      case 'send':
+        return 'arrow-up-right';
+      case 'receive':
+        return 'arrow-down-left';
+      case 'scan':
+        return 'scan';
+      case 'add':
+        return 'flash';
+      default:
+        return 'swap-horizontal';
     }
   }
 
   function txColor(tx: Transaction) {
-    return tx.from_user === user?.id ? '#FF5630' : '#36B37E';
+    return tx.from_user === user?.id ? BitcoinColors.red : BitcoinColors.green;
   }
 
   return (
     <ScrollView
       style={styles.root}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-      {/* Header + Balance */}
-      <LinearGradient colors={[Brand.primary, Brand.primaryDark]} style={styles.header}>
-        <View style={styles.headerRow}>
-          <View>
-            <Text style={styles.greeting}>
-              {getGreeting()},{' '}
-              <Text style={styles.greetingName}>{profile?.full_name?.split(' ')[0] ?? 'User'}</Text>
+      contentContainerStyle={styles.scrollContent}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          tintColor={BitcoinColors.orange}
+          colors={[BitcoinColors.orange]}
+        />
+      }>
+      {/* Top Header / Profile Bar */}
+      <View style={styles.topBar}>
+        <View style={styles.brandingRow}>
+          <BitcoinBadge size={34} glow={false} />
+          <View style={styles.brandingTextWrap}>
+            <Text style={styles.appName}>
+              YT<Text style={styles.appNameAccent}>CASH</Text>
             </Text>
+            <View style={styles.networkBadge}>
+              <View style={styles.networkDot} />
+              <Text style={styles.networkText}>⚡ LIGHTNING READY</Text>
+            </View>
           </View>
-          <TouchableOpacity onPress={() => router.push('/profile')} style={styles.avatarBtn}>
-            <Ionicons name="person-circle" size={40} color="rgba(255,255,255,0.9)" />
-          </TouchableOpacity>
         </View>
 
-        <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>Total Balance</Text>
-          <Text style={styles.balanceAmount}>{formatCurrency(balance)}</Text>
-          <Text style={styles.balanceSub}>Philippine Peso</Text>
-        </View>
-      </LinearGradient>
+        <TouchableOpacity onPress={() => router.push('/profile')} style={styles.avatarBtn}>
+          <LinearGradient colors={[BitcoinColors.orange, '#9945FF']} style={styles.avatarGradient}>
+            <Ionicons name="person" size={18} color="#FFFFFF" />
+          </LinearGradient>
+        </TouchableOpacity>
+      </View>
 
-      {/* Quick Actions */}
+      {/* Hero Bitcoin Balance Card */}
+      <View style={styles.heroCardContainer}>
+        <LinearGradient
+          colors={['#1E160A', '#131825', '#0C0F17']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.heroCard}>
+          {/* Subtle geometric / coin background accent */}
+          <View style={styles.heroCardHeader}>
+            <View>
+              <Text style={styles.balanceLabel}>TOTAL BALANCE</Text>
+              <TouchableOpacity
+                onPress={() => setDisplayMode(displayMode === 'fiat' ? 'sats' : 'fiat')}
+                activeOpacity={0.7}
+                style={styles.balanceRow}>
+                {displayMode === 'fiat' ? (
+                  <Text style={styles.balanceAmount}>{formatCurrency(balance)}</Text>
+                ) : (
+                  <Text style={styles.balanceAmountSats}>
+                    {satsBalance.toLocaleString()}{' '}
+                    <Text style={styles.satsUnit}>SATS</Text>
+                  </Text>
+                )}
+                <View style={styles.togglePill}>
+                  <Text style={styles.togglePillText}>
+                    {displayMode === 'fiat' ? 'PHP ⇄ SATS' : 'SATS ⇄ PHP'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            <BitcoinBadge size={52} glow={true} />
+          </View>
+
+          {/* Crypto Equiv Pill */}
+          <View style={styles.cryptoEquivRow}>
+            <View style={styles.cryptoPill}>
+              <Text style={styles.cryptoPillSymbol}>₿</Text>
+              <Text style={styles.cryptoPillText}>~{btcBalance.toFixed(6)} BTC</Text>
+            </View>
+            <View style={[styles.cryptoPill, styles.satsPill]}>
+              <Text style={styles.satsLightning}>⚡</Text>
+              <Text style={styles.satsPillText}>{satsBalance.toLocaleString()} sats</Text>
+            </View>
+          </View>
+
+          {/* Card footer CTA buttons */}
+          <View style={styles.cardActionRow}>
+            <TouchableOpacity
+              style={styles.cardPrimaryBtn}
+              onPress={() => router.push('/(tabs)/send')}
+              activeOpacity={0.8}>
+              <LinearGradient
+                colors={Brand.gradientButton}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.cardBtnGradient}>
+                <Ionicons name="arrow-up" size={16} color="#0B0E14" />
+                <Text style={styles.cardPrimaryBtnText}>Send Money</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cardSecondaryBtn}
+              onPress={() => router.push('/add-money')}
+              activeOpacity={0.8}>
+              <Ionicons name="add" size={16} color={BitcoinColors.orange} />
+              <Text style={styles.cardSecondaryBtnText}>Deposit</Text>
+            </TouchableOpacity>
+          </View>
+        </LinearGradient>
+      </View>
+
+      {/* Quick Actions Grid */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Quick Actions</Text>
-        <View style={styles.actionsRow}>
+        <Text style={styles.sectionTitle}>QUICK ACTIONS</Text>
+        <View style={styles.actionsGrid}>
           {quickActions.map((a) => (
             <TouchableOpacity
               key={a.key}
-              style={styles.actionItem}
-              onPress={() => router.push(a.route as any)}>
-              <View style={[styles.actionCircle, { backgroundColor: a.color }]}>
-                <Ionicons name={a.icon} size={24} color="#fff" />
+              style={styles.actionCard}
+              onPress={() => router.push(a.route as any)}
+              activeOpacity={0.75}>
+              <View style={[styles.actionIconWrap, { backgroundColor: a.color + '1A', borderColor: a.color + '4D' }]}>
+                <Ionicons name={a.icon} size={22} color={a.color} />
               </View>
               <Text style={styles.actionLabel}>{a.label}</Text>
+              <Text style={styles.actionSub}>{a.sub}</Text>
             </TouchableOpacity>
           ))}
         </View>
       </View>
 
-      {/* Exchange Rates */}
+      {/* Bitcoin & Market Rates Spotlight */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Exchange Rates (to PHP)</Text>
-        <View style={styles.ratesCard}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>MARKET & EXCHANGE RATES</Text>
+          <View style={styles.liveIndicator}>
+            <View style={styles.livePulse} />
+            <Text style={styles.liveText}>LIVE</Text>
+          </View>
+        </View>
+
+        {/* Featured Bitcoin Spotlight Card */}
+        <View style={styles.btcSpotlightCard}>
+          <LinearGradient
+            colors={['rgba(247, 147, 26, 0.12)', 'rgba(18, 23, 34, 0.95)']}
+            style={styles.btcSpotlightGradient}>
+            <View style={styles.btcSpotlightTop}>
+              <View style={styles.btcHeaderGroup}>
+                <BitcoinBadge size={36} glow={false} />
+                <View style={{ marginLeft: 10 }}>
+                  <Text style={styles.btcTitle}>Bitcoin</Text>
+                  <Text style={styles.btcSubtitle}>BTC / PHP • Benchmark</Text>
+                </View>
+              </View>
+              <View style={styles.changeBadge}>
+                <Ionicons name="trending-up" size={13} color="#10B981" />
+                <Text style={styles.changeBadgeText}>+3.84%</Text>
+              </View>
+            </View>
+
+            <View style={styles.btcPriceRow}>
+              <Text style={styles.btcPrice}>
+                {formatCurrency(APPROX_PHP_PER_BTC, 'PHP')}
+              </Text>
+              <Text style={styles.satsExchangeTag}>
+                1 PHP ≈ {(100000000 / APPROX_PHP_PER_BTC).toFixed(1)} sats
+              </Text>
+            </View>
+          </LinearGradient>
+        </View>
+
+        {/* Global FX Rates */}
+        <View style={styles.ratesContainer}>
           {Object.entries(CURRENCIES)
-            .filter(([code]) => code !== 'PHP')
+            .filter(([code]) => code !== 'PHP' && code !== 'BTC' && code !== 'SATS')
             .map(([code, info]) => {
               const rate = rates?.rates?.[code];
-              const phpPer1 = rate ? (1 / rate) : null;
+              const phpPer1 = rate ? 1 / rate : null;
               return (
                 <View key={code} style={styles.rateRow}>
-                  <Text style={styles.rateFlag}>{info.flag}</Text>
-                  <Text style={styles.rateCode}>{code}</Text>
+                  <View style={styles.rateLeft}>
+                    <Text style={styles.rateFlag}>{info.flag}</Text>
+                    <View>
+                      <Text style={styles.rateCode}>{code}</Text>
+                      <Text style={styles.rateName}>{info.name}</Text>
+                    </View>
+                  </View>
                   <Text style={styles.rateValue}>
-                    {phpPer1 ? `1 ${code} = ${formatCurrency(phpPer1)}` : '...'}
+                    {phpPer1 ? `1 ${code} = ${formatCurrency(phpPer1)}` : 'Loading...'}
                   </Text>
                 </View>
               );
@@ -135,122 +304,530 @@ export default function HomeScreen() {
         </View>
       </View>
 
-      {/* Recent Transactions */}
+      {/* Recent Ledger Transactions */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Recent Transactions</Text>
+          <Text style={styles.sectionTitle}>RECENT TRANSACTIONS</Text>
           <TouchableOpacity onPress={() => router.push('/(tabs)/history')}>
-            <Text style={styles.seeAll}>See All</Text>
+            <Text style={styles.seeAll}>View All</Text>
           </TouchableOpacity>
         </View>
+
         {transactions.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Ionicons name="receipt-outline" size={48} color="#E5E7EB" />
-            <Text style={styles.emptyText}>No transactions yet</Text>
-            <Text style={styles.emptySub}>Send money or scan cash to get started</Text>
+            <View style={styles.emptyIconCircle}>
+              <Ionicons name="receipt-outline" size={32} color={BitcoinColors.orange} />
+            </View>
+            <Text style={styles.emptyText}>No activity recorded yet</Text>
+            <Text style={styles.emptySub}>
+              Send money or scan physical cash to generate your first Bitcoin ledger entry.
+            </Text>
           </View>
         ) : (
-          transactions.map((tx) => (
-            <View key={tx.id} style={styles.txRow}>
-              <View style={[styles.txIcon, { backgroundColor: txColor(tx) + '20' }]}>
-                <Ionicons name={txIcon(tx.type) as any} size={22} color={txColor(tx)} />
+          transactions.map((tx) => {
+            const isOutgoing = tx.from_user === user?.id;
+            const color = txColor(tx);
+            const satsEquiv = phpToSats(tx.amount);
+            return (
+              <View key={tx.id} style={styles.txRow}>
+                <View style={[styles.txIcon, { backgroundColor: color + '1F', borderColor: color + '40' }]}>
+                  <Ionicons name={txIcon(tx.type) as any} size={20} color={color} />
+                </View>
+                <View style={styles.txInfo}>
+                  <Text style={styles.txType}>
+                    {tx.type === 'send'
+                      ? 'Payment Sent'
+                      : tx.type === 'receive'
+                      ? 'Payment Received'
+                      : tx.type === 'scan'
+                      ? 'Cash Scanned'
+                      : 'Funds Deposited'}
+                  </Text>
+                  <Text style={styles.txDate}>
+                    {new Date(tx.created_at).toLocaleDateString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </Text>
+                </View>
+                <View style={styles.txAmountWrap}>
+                  <Text style={[styles.txAmount, { color }]}>
+                    {isOutgoing ? '-' : '+'}
+                    {formatCurrency(tx.amount, tx.currency)}
+                  </Text>
+                  <Text style={styles.txSatsSub}>
+                    {isOutgoing ? '-' : '+'}
+                    {satsEquiv.toLocaleString()} sats
+                  </Text>
+                </View>
               </View>
-              <View style={styles.txInfo}>
-                <Text style={styles.txType}>
-                  {tx.type === 'send' ? 'Sent' : tx.type === 'receive' ? 'Received' : tx.type === 'scan' ? 'Cash Scanned' : 'Added'}
-                </Text>
-                <Text style={styles.txDate}>
-                  {new Date(tx.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                </Text>
-              </View>
-              <Text style={[styles.txAmount, { color: txColor(tx) }]}>
-                {tx.from_user === user?.id ? '-' : '+'}{formatCurrency(tx.amount, tx.currency)}
-              </Text>
-            </View>
-          ))
+            );
+          })
         )}
       </View>
 
-      <View style={{ height: 30 }} />
+      <View style={{ height: 40 }} />
     </ScrollView>
   );
 }
 
-function getGreeting() {
-  const h = new Date().getHours();
-  if (h < 12) return 'Good morning';
-  if (h < 18) return 'Good afternoon';
-  return 'Good evening';
-}
-
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#F5F5F5' },
-  header: { paddingTop: 56, paddingBottom: 32, paddingHorizontal: 20 },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  greeting: { color: 'rgba(255,255,255,0.85)', fontSize: 16 },
-  greetingName: { fontWeight: '700', color: '#fff' },
-  avatarBtn: { padding: 4 },
-  balanceCard: {
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
+  root: {
+    flex: 1,
+    backgroundColor: BitcoinColors.darkBg,
   },
-  balanceLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 13, marginBottom: 4 },
-  balanceAmount: { color: '#fff', fontSize: 34, fontWeight: '800' },
-  balanceSub: { color: 'rgba(255,255,255,0.6)', fontSize: 12, marginTop: 2 },
-  section: { paddingHorizontal: 20, marginTop: 22 },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  sectionTitle: { fontSize: 17, fontWeight: '700', color: '#1A1A2E', marginBottom: 14 },
-  seeAll: { color: Brand.primary, fontSize: 14, fontWeight: '600', marginBottom: 14 },
-  actionsRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  actionItem: { alignItems: 'center', width: '23%' },
-  actionCircle: { width: 52, height: 52, borderRadius: 26, justifyContent: 'center', alignItems: 'center', marginBottom: 6 },
-  actionLabel: { fontSize: 12, color: '#6B7280', fontWeight: '500', textAlign: 'center' },
-  ratesCard: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 14,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
+  scrollContent: {
+    paddingBottom: 20,
   },
-  rateRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F5F5F5' },
-  rateFlag: { fontSize: 22, marginRight: 10 },
-  rateCode: { fontSize: 15, fontWeight: '600', color: '#1A1A2E', width: 44 },
-  rateValue: { flex: 1, textAlign: 'right', fontSize: 14, color: '#6B7280' },
-  emptyCard: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 32,
+  topBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
+    paddingTop: 54,
+    paddingHorizontal: 20,
+    paddingBottom: 16,
   },
-  emptyText: { fontSize: 16, fontWeight: '600', color: '#6B7280', marginTop: 12 },
-  emptySub: { fontSize: 13, color: '#9CA3AF', marginTop: 4 },
+  brandingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  brandingTextWrap: {
+    marginLeft: 10,
+  },
+  appName: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  appNameAccent: {
+    color: BitcoinColors.orange,
+  },
+  networkBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  networkDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10B981',
+    marginRight: 5,
+  },
+  networkText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#10B981',
+    letterSpacing: 0.6,
+  },
+  avatarBtn: {
+    padding: 2,
+  },
+  avatarGradient: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  heroCardContainer: {
+    paddingHorizontal: 20,
+    marginTop: 4,
+  },
+  heroCard: {
+    borderRadius: 22,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.35)',
+    elevation: 8,
+    shadowColor: BitcoinColors.orange,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+  },
+  heroCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  balanceLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: BitcoinColors.textSecondary,
+    letterSpacing: 1.2,
+    marginBottom: 4,
+  },
+  balanceRow: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+  },
+  balanceAmount: {
+    fontSize: 34,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
+  },
+  balanceAmountSats: {
+    fontSize: 30,
+    fontWeight: '900',
+    color: BitcoinColors.gold,
+    letterSpacing: -0.5,
+  },
+  satsUnit: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: BitcoinColors.orange,
+  },
+  togglePill: {
+    backgroundColor: 'rgba(247, 147, 26, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.25)',
+    marginTop: 4,
+  },
+  togglePillText: {
+    color: BitcoinColors.orangeLight,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  cryptoEquivRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+    gap: 8,
+  },
+  cryptoPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  cryptoPillSymbol: {
+    color: BitcoinColors.orange,
+    fontSize: 13,
+    fontWeight: '800',
+    marginRight: 4,
+  },
+  cryptoPillText: {
+    color: '#E2E8F0',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  satsPill: {
+    backgroundColor: 'rgba(247, 147, 26, 0.1)',
+    borderColor: 'rgba(247, 147, 26, 0.25)',
+  },
+  satsLightning: {
+    color: BitcoinColors.lightning,
+    fontSize: 11,
+    marginRight: 3,
+  },
+  satsPillText: {
+    color: BitcoinColors.gold,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  cardActionRow: {
+    flexDirection: 'row',
+    marginTop: 20,
+    gap: 12,
+  },
+  cardPrimaryBtn: {
+    flex: 1.2,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  cardBtnGradient: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 12,
+    gap: 6,
+  },
+  cardPrimaryBtnText: {
+    color: '#07090E',
+    fontWeight: '800',
+    fontSize: 14,
+  },
+  cardSecondaryBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.3)',
+    borderRadius: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  cardSecondaryBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  section: {
+    paddingHorizontal: 20,
+    marginTop: 26,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: BitcoinColors.textSecondary,
+    letterSpacing: 1.1,
+    marginBottom: 12,
+  },
+  seeAll: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: BitcoinColors.orange,
+    marginBottom: 12,
+  },
+  actionsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  actionCard: {
+    width: '23%',
+    backgroundColor: BitcoinColors.cardBg,
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+  },
+  actionIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    marginBottom: 8,
+  },
+  actionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  actionSub: {
+    fontSize: 9,
+    fontWeight: '500',
+    color: BitcoinColors.textMuted,
+    marginTop: 2,
+  },
+  liveIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+    marginBottom: 12,
+    gap: 4,
+  },
+  livePulse: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10B981',
+  },
+  liveText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#10B981',
+  },
+  btcSpotlightCard: {
+    borderRadius: 18,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.35)',
+    marginBottom: 12,
+  },
+  btcSpotlightGradient: {
+    padding: 16,
+  },
+  btcSpotlightTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  btcHeaderGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  btcTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  btcSubtitle: {
+    fontSize: 11,
+    color: BitcoinColors.textSecondary,
+  },
+  changeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    gap: 3,
+  },
+  changeBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#10B981',
+  },
+  btcPriceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    marginTop: 14,
+  },
+  btcPrice: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: BitcoinColors.gold,
+    letterSpacing: -0.3,
+  },
+  satsExchangeTag: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: BitcoinColors.orangeLight,
+  },
+  ratesContainer: {
+    backgroundColor: BitcoinColors.cardBg,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+  },
+  rateRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  rateLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  rateFlag: {
+    fontSize: 20,
+    marginRight: 10,
+  },
+  rateCode: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  rateName: {
+    fontSize: 11,
+    color: BitcoinColors.textMuted,
+  },
+  rateValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: BitcoinColors.textSecondary,
+  },
+  emptyCard: {
+    backgroundColor: BitcoinColors.cardBg,
+    borderRadius: 18,
+    padding: 28,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+  },
+  emptyIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(247, 147, 26, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  emptyText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginTop: 4,
+  },
+  emptySub: {
+    fontSize: 12,
+    color: BitcoinColors.textSecondary,
+    textAlign: 'center',
+    marginTop: 6,
+    lineHeight: 18,
+  },
   txRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 12,
+    backgroundColor: BitcoinColors.cardBg,
+    borderRadius: 16,
     padding: 14,
-    marginBottom: 8,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
   },
-  txIcon: { width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  txInfo: { flex: 1 },
-  txType: { fontSize: 14, fontWeight: '600', color: '#1A1A2E' },
-  txDate: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
-  txAmount: { fontSize: 15, fontWeight: '700' },
+  txIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    marginRight: 12,
+  },
+  txInfo: {
+    flex: 1,
+  },
+  txType: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  txDate: {
+    fontSize: 11,
+    color: BitcoinColors.textMuted,
+    marginTop: 2,
+  },
+  txAmountWrap: {
+    alignItems: 'flex-end',
+  },
+  txAmount: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  txSatsSub: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: BitcoinColors.textMuted,
+    marginTop: 2,
+  },
 });

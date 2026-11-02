@@ -10,9 +10,10 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
-import { Brand } from '@/constants/theme';
-import { CURRENCIES, formatCurrency } from '@/constants/currencies';
+import { BitcoinColors } from '@/constants/theme';
+import { formatCurrency, phpToSats } from '@/constants/currencies';
 import { getTransactions, type Transaction } from '@/services/supabase';
+import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 type FilterType = 'all' | 'send' | 'receive' | 'scan' | 'add';
 
@@ -45,49 +46,66 @@ export default function HistoryScreen() {
     setRefreshing(false);
   }, [loadTransactions]);
 
-  const filtered = filter === 'all'
-    ? transactions
-    : transactions.filter((tx) => tx.type === filter);
+  const filtered =
+    filter === 'all'
+      ? transactions
+      : transactions.filter((tx) => tx.type === filter);
 
-  const filters: { key: FilterType; label: string }[] = [
-    { key: 'all', label: 'All' },
-    { key: 'send', label: 'Sent' },
-    { key: 'receive', label: 'Received' },
-    { key: 'scan', label: 'Scanned' },
-    { key: 'add', label: 'Added' },
+  const filters: { key: FilterType; label: string; icon: any }[] = [
+    { key: 'all', label: 'All', icon: 'layers' },
+    { key: 'send', label: 'Sent', icon: 'arrow-up-right' },
+    { key: 'receive', label: 'Received', icon: 'arrow-down-left' },
+    { key: 'scan', label: 'Scanned', icon: 'scan' },
+    { key: 'add', label: 'Deposits', icon: 'flash' },
   ];
 
   function txIcon(type: string): any {
     switch (type) {
-      case 'send': return 'arrow-up-circle';
-      case 'receive': return 'arrow-down-circle';
-      case 'scan': return 'camera';
-      case 'add': return 'add-circle';
-      default: return 'swap-horizontal';
+      case 'send':
+        return 'arrow-up-right';
+      case 'receive':
+        return 'arrow-down-left';
+      case 'scan':
+        return 'scan';
+      case 'add':
+        return 'flash';
+      default:
+        return 'swap-horizontal';
     }
   }
 
   function txColor(tx: Transaction) {
-    return tx.from_user === user?.id ? '#FF5630' : '#36B37E';
+    return tx.from_user === user?.id ? BitcoinColors.red : BitcoinColors.green;
   }
 
   function renderTransaction({ item: tx }: { item: Transaction }) {
     const color = txColor(tx);
     const isOutgoing = tx.from_user === user?.id;
+    const satsEquiv = phpToSats(tx.amount);
 
     return (
       <View style={styles.txCard}>
-        <View style={[styles.txIconCircle, { backgroundColor: color + '15' }]}>
-          <Ionicons name={txIcon(tx.type)} size={24} color={color} />
+        <View style={[styles.txIconCircle, { backgroundColor: color + '15', borderColor: color + '35' }]}>
+          <Ionicons name={txIcon(tx.type)} size={22} color={color} />
         </View>
+
         <View style={styles.txInfo}>
           <Text style={styles.txType}>
-            {tx.type === 'send' ? 'Sent Money' :
-             tx.type === 'receive' ? 'Received Money' :
-             tx.type === 'scan' ? 'Cash Scanned' :
-             tx.type === 'add' ? 'Money Added' : 'Transaction'}
+            {tx.type === 'send'
+              ? 'Payment Sent'
+              : tx.type === 'receive'
+              ? 'Payment Received'
+              : tx.type === 'scan'
+              ? 'Banknote Digitized'
+              : tx.type === 'add'
+              ? 'Wallet Deposit'
+              : 'Transaction'}
           </Text>
-          {tx.note ? <Text style={styles.txNote} numberOfLines={1}>{tx.note}</Text> : null}
+          {tx.note ? (
+            <Text style={styles.txNote} numberOfLines={1}>
+              {tx.note}
+            </Text>
+          ) : null}
           <Text style={styles.txDate}>
             {new Date(tx.created_at).toLocaleDateString('en-US', {
               weekday: 'short',
@@ -98,19 +116,19 @@ export default function HistoryScreen() {
             })}
           </Text>
         </View>
+
         <View style={styles.txRight}>
           <Text style={[styles.txAmount, { color }]}>
-            {isOutgoing ? '-' : '+'}{formatCurrency(tx.amount, tx.currency)}
+            {isOutgoing ? '-' : '+'}
+            {formatCurrency(tx.amount, tx.currency)}
           </Text>
-          {tx.currency !== 'PHP' && (
-            <Text style={styles.txConverted}>
-              {'\u2248'} {formatCurrency(tx.converted_amount)}
-            </Text>
-          )}
-          <View style={[styles.statusBadge, tx.status === 'completed' ? styles.statusCompleted : styles.statusPending]}>
-            <Text style={[styles.statusText, tx.status === 'completed' ? styles.statusTextCompleted : styles.statusTextPending]}>
-              {tx.status}
-            </Text>
+          <Text style={styles.txSatsText}>
+            {isOutgoing ? '-' : '+'}
+            {satsEquiv.toLocaleString()} sats
+          </Text>
+          <View style={styles.statusBadge}>
+            <View style={styles.statusDot} />
+            <Text style={styles.statusText}>Settled</Text>
           </View>
         </View>
       </View>
@@ -120,43 +138,78 @@ export default function HistoryScreen() {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={Brand.primary} />
+        <BitcoinBadge size={52} glow={true} />
+        <ActivityIndicator size="large" color={BitcoinColors.orange} style={{ marginTop: 20 }} />
+        <Text style={styles.loadingText}>Syncing Ledger...</Text>
       </View>
     );
   }
 
   return (
     <View style={styles.root}>
+      {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Transaction History</Text>
+        <View style={styles.headerTitleRow}>
+          <BitcoinBadge size={32} glow={false} />
+          <Text style={styles.headerTitle}>Bitcoin Ledger</Text>
+        </View>
+        <Text style={styles.headerSub}>Complete cryptographic transaction audit trail</Text>
       </View>
 
-      {/* Filters */}
+      {/* Filter Chips */}
       <View style={styles.filterRow}>
-        {filters.map((f) => (
-          <TouchableOpacity
-            key={f.key}
-            style={[styles.filterChip, filter === f.key && styles.filterActive]}
-            onPress={() => setFilter(f.key)}>
-            <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>
-              {f.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        <FlatList
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          data={filters}
+          keyExtractor={(item) => item.key}
+          contentContainerStyle={styles.filterList}
+          renderItem={({ item: f }) => {
+            const active = filter === f.key;
+            return (
+              <TouchableOpacity
+                style={[styles.filterChip, active && styles.filterActive]}
+                onPress={() => setFilter(f.key)}
+                activeOpacity={0.8}>
+                <Ionicons
+                  name={f.icon}
+                  size={14}
+                  color={active ? '#07090E' : BitcoinColors.textSecondary}
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={[styles.filterText, active && styles.filterTextActive]}>
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          }}
+        />
       </View>
 
+      {/* Transactions List */}
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
         renderItem={renderTransaction}
         contentContainerStyle={styles.list}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={BitcoinColors.orange}
+            colors={[BitcoinColors.orange]}
+          />
+        }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Ionicons name="receipt-outline" size={56} color="#E5E7EB" />
-            <Text style={styles.emptyText}>No transactions found</Text>
+            <View style={styles.emptyIconCircle}>
+              <Ionicons name="receipt-outline" size={36} color={BitcoinColors.orange} />
+            </View>
+            <Text style={styles.emptyText}>No ledger entries found</Text>
             <Text style={styles.emptySub}>
-              {filter !== 'all' ? 'Try a different filter' : 'Your transaction history will appear here'}
+              {filter !== 'all'
+                ? 'Try selecting a different filter category.'
+                : 'Transactions will appear here with cryptographic confirmation.'}
             </Text>
           </View>
         }
@@ -166,57 +219,177 @@ export default function HistoryScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#F5F5F5' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { paddingTop: 56, paddingHorizontal: 20, paddingBottom: 12, backgroundColor: Brand.primary },
-  headerTitle: { fontSize: 24, fontWeight: '800', color: '#fff' },
-  filterRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 8,
-    backgroundColor: '#fff',
+  root: {
+    flex: 1,
+    backgroundColor: BitcoinColors.darkBg,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: BitcoinColors.darkBg,
+  },
+  loadingText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: BitcoinColors.textSecondary,
+    marginTop: 8,
+  },
+  header: {
+    paddingTop: 54,
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: BitcoinColors.cardBg,
     borderBottomWidth: 1,
-    borderBottomColor: '#F5F5F5',
+    borderBottomColor: BitcoinColors.border,
+  },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
+  },
+  headerSub: {
+    fontSize: 12,
+    color: BitcoinColors.textSecondary,
+    marginTop: 4,
+  },
+  filterRow: {
+    backgroundColor: BitcoinColors.cardBg,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: BitcoinColors.border,
+  },
+  filterList: {
+    paddingHorizontal: 16,
+    gap: 8,
   },
   filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 14,
     paddingVertical: 7,
     borderRadius: 20,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: BitcoinColors.cardElevated,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
   },
-  filterActive: { backgroundColor: Brand.primary },
-  filterText: { fontSize: 13, fontWeight: '600', color: '#6B7280' },
-  filterTextActive: { color: '#fff' },
-  list: { padding: 16, paddingBottom: 30 },
+  filterActive: {
+    backgroundColor: BitcoinColors.orange,
+    borderColor: BitcoinColors.gold,
+  },
+  filterText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: BitcoinColors.textSecondary,
+  },
+  filterTextActive: {
+    color: '#07090E',
+  },
+  list: {
+    padding: 16,
+    paddingBottom: 36,
+  },
   txCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 16,
+    backgroundColor: BitcoinColors.cardBg,
+    borderRadius: 16,
+    padding: 14,
     marginBottom: 10,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
   },
-  txIconCircle: { width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
-  txInfo: { flex: 1 },
-  txType: { fontSize: 15, fontWeight: '600', color: '#1A1A2E' },
-  txNote: { fontSize: 13, color: '#6B7280', marginTop: 2 },
-  txDate: { fontSize: 12, color: '#9CA3AF', marginTop: 3 },
-  txRight: { alignItems: 'flex-end' },
-  txAmount: { fontSize: 16, fontWeight: '700' },
-  txConverted: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
-  statusBadge: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2, marginTop: 4 },
-  statusCompleted: { backgroundColor: '#E3FCEF' },
-  statusPending: { backgroundColor: '#FEF3C7' },
-  statusText: { fontSize: 11, fontWeight: '600' },
-  statusTextCompleted: { color: '#36B37E' },
-  statusTextPending: { color: '#F59E0B' },
-  emptyContainer: { alignItems: 'center', paddingTop: 60 },
-  emptyText: { fontSize: 17, fontWeight: '600', color: '#6B7280', marginTop: 14 },
-  emptySub: { fontSize: 14, color: '#9CA3AF', marginTop: 4, textAlign: 'center' },
+  txIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    marginRight: 12,
+  },
+  txInfo: {
+    flex: 1,
+  },
+  txType: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  txNote: {
+    fontSize: 12,
+    color: BitcoinColors.textSecondary,
+    marginTop: 2,
+  },
+  txDate: {
+    fontSize: 11,
+    color: BitcoinColors.textMuted,
+    marginTop: 3,
+  },
+  txRight: {
+    alignItems: 'flex-end',
+  },
+  txAmount: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  txSatsText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: BitcoinColors.gold,
+    marginTop: 2,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginTop: 4,
+    gap: 4,
+  },
+  statusDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#10B981',
+  },
+  statusText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#10B981',
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 20,
+  },
+  emptyIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(247, 147, 26, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  emptyText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  emptySub: {
+    fontSize: 13,
+    color: BitcoinColors.textSecondary,
+    textAlign: 'center',
+    marginTop: 6,
+    lineHeight: 18,
+  },
 });

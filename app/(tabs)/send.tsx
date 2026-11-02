@@ -10,11 +10,13 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
-import { Brand } from '@/constants/theme';
-import { formatCurrency } from '@/constants/currencies';
+import { BitcoinColors, Brand } from '@/constants/theme';
+import { formatCurrency, phpToSats } from '@/constants/currencies';
 import { supabase, createTransaction, updateBalance } from '@/services/supabase';
+import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function SendMoneyScreen() {
   const { user, profile, refreshProfile } = useAuth();
@@ -24,6 +26,12 @@ export default function SendMoneyScreen() {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'input' | 'confirm'>('input');
   const [recipientProfile, setRecipientProfile] = useState<any>(null);
+
+  const balance = profile?.balance ?? 0;
+  const numAmount = parseFloat(amount) || 0;
+  const satsAmount = phpToSats(numAmount);
+
+  const quickChips = [100, 500, 1000, 2000];
 
   async function lookupRecipient() {
     if (!recipient.trim()) {
@@ -64,7 +72,7 @@ export default function SendMoneyScreen() {
       Alert.alert('Error', 'Please enter a valid amount');
       return;
     }
-    if (amt > (profile?.balance ?? 0)) {
+    if (amt > balance) {
       Alert.alert('Insufficient Balance', 'You do not have enough balance for this transfer.');
       return;
     }
@@ -88,9 +96,9 @@ export default function SendMoneyScreen() {
       await refreshProfile();
 
       Alert.alert(
-        'Success!',
-        `${formatCurrency(amt)} sent to ${recipientProfile.full_name ?? 'user'}.`,
-        [{ text: 'OK', onPress: resetForm }],
+        'Transaction Broadcast!',
+        `${formatCurrency(amt)} (${satsAmount.toLocaleString()} sats) sent instantly to ${recipientProfile.full_name ?? 'user'}.`,
+        [{ text: 'Done', onPress: resetForm }],
       );
     } catch (err: any) {
       Alert.alert('Transfer Failed', err.message ?? 'Something went wrong');
@@ -112,152 +120,502 @@ export default function SendMoneyScreen() {
       style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        {/* Header */}
+        {/* Top Header */}
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Send Money</Text>
-          <Text style={styles.headerSub}>
-            Available: {formatCurrency(profile?.balance ?? 0)}
-          </Text>
+          <View style={styles.headerTitleRow}>
+            <BitcoinBadge size={32} glow={false} />
+            <Text style={styles.headerTitle}>Send Payment</Text>
+          </View>
+          <View style={styles.balancePill}>
+            <Text style={styles.balancePillLabel}>Available:</Text>
+            <Text style={styles.balancePillValue}>{formatCurrency(balance)}</Text>
+            <Text style={styles.balancePillSats}>({phpToSats(balance).toLocaleString()} sats)</Text>
+          </View>
         </View>
 
         {step === 'input' ? (
           <View style={styles.card}>
-            <Text style={styles.label}>Recipient</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Email or phone number"
-              placeholderTextColor="#999"
-              value={recipient}
-              onChangeText={setRecipient}
-              autoCapitalize="none"
-              keyboardType="email-address"
-            />
-
-            <Text style={styles.label}>Amount (PHP)</Text>
-            <View style={styles.amountRow}>
-              <Text style={styles.currencySymbol}>{'\u20B1'}</Text>
+            {/* Recipient Input */}
+            <Text style={styles.label}>RECIPIENT (PHONE / EMAIL / LIGHTNING)</Text>
+            <View style={styles.inputWrap}>
+              <Ionicons name="at" size={20} color={BitcoinColors.orange} style={styles.inputIcon} />
               <TextInput
-                style={styles.amountInput}
-                placeholder="0.00"
-                placeholderTextColor="#999"
-                value={amount}
-                onChangeText={setAmount}
-                keyboardType="decimal-pad"
+                style={styles.input}
+                placeholder="name@example.com or 09xxxxxxxxx"
+                placeholderTextColor={BitcoinColors.textMuted}
+                value={recipient}
+                onChangeText={setRecipient}
+                autoCapitalize="none"
+                keyboardType="email-address"
               />
             </View>
 
-            <Text style={styles.label}>Note (optional)</Text>
+            {/* Amount Input */}
+            <Text style={[styles.label, { marginTop: 18 }]}>AMOUNT TO SEND (PHP)</Text>
+            <View style={styles.amountBox}>
+              <View style={styles.amountInputRow}>
+                <Text style={styles.currencySymbol}>₱</Text>
+                <TextInput
+                  style={styles.amountInput}
+                  placeholder="0.00"
+                  placeholderTextColor={BitcoinColors.textMuted}
+                  value={amount}
+                  onChangeText={setAmount}
+                  keyboardType="decimal-pad"
+                />
+              </View>
+
+              {numAmount > 0 && (
+                <View style={styles.satsConversionRow}>
+                  <Text style={styles.satsConversionIcon}>⚡</Text>
+                  <Text style={styles.satsConversionText}>
+                    ≈ {satsAmount.toLocaleString()} SATS
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* Quick Amount Chips */}
+            <View style={styles.chipsRow}>
+              {quickChips.map((val) => (
+                <TouchableOpacity
+                  key={val}
+                  style={styles.chip}
+                  onPress={() => setAmount(val.toString())}>
+                  <Text style={styles.chipText}>₱{val.toLocaleString()}</Text>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                style={[styles.chip, styles.chipMax]}
+                onPress={() => setAmount(balance.toString())}>
+                <Text style={styles.chipMaxText}>MAX</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Note input */}
+            <Text style={[styles.label, { marginTop: 18 }]}>MEMO / NOTE (OPTIONAL)</Text>
             <TextInput
-              style={[styles.input, styles.noteInput]}
-              placeholder="What's this for?"
-              placeholderTextColor="#999"
+              style={[styles.inputSingle, styles.noteInput]}
+              placeholder="What is this payment for?"
+              placeholderTextColor={BitcoinColors.textMuted}
               value={note}
               onChangeText={setNote}
               multiline
             />
 
+            {/* Network fee indicator */}
+            <View style={styles.feeBanner}>
+              <Ionicons name="flash" size={16} color={BitcoinColors.lightning} />
+              <Text style={styles.feeBannerText}>
+                Instant Settlement • <Text style={{ color: BitcoinColors.green }}>0 Sats Network Fee</Text>
+              </Text>
+            </View>
+
+            {/* Continue Button */}
             <TouchableOpacity
-              style={[styles.btn, loading && styles.btnDisabled]}
+              style={[styles.btnWrap, loading && styles.btnDisabled]}
               onPress={lookupRecipient}
-              disabled={loading}>
-              <Text style={styles.btnText}>{loading ? 'Searching...' : 'Continue'}</Text>
+              disabled={loading}
+              activeOpacity={0.85}>
+              <LinearGradient
+                colors={Brand.gradientButton}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.btnGradient}>
+                <Text style={styles.btnText}>{loading ? 'Verifying Recipient...' : 'Review Payment'}</Text>
+                <Ionicons name="arrow-forward" size={18} color="#07090E" />
+              </LinearGradient>
             </TouchableOpacity>
           </View>
         ) : (
           <View style={styles.card}>
-            <Text style={styles.confirmTitle}>Confirm Transfer</Text>
+            <View style={styles.confirmHeader}>
+              <BitcoinBadge size={44} glow={true} />
+              <Text style={styles.confirmTitle}>Confirm Transaction</Text>
+              <Text style={styles.confirmSubtitle}>Review destination before broadcasting</Text>
+            </View>
 
-            <View style={styles.confirmRow}>
-              <Ionicons name="person-circle" size={48} color={Brand.primary} />
-              <View style={styles.confirmInfo}>
-                <Text style={styles.confirmName}>{recipientProfile?.full_name ?? 'User'}</Text>
-                <Text style={styles.confirmDetail}>
-                  {recipientProfile?.email ?? recipientProfile?.phone}
+            <View style={styles.confirmCardBox}>
+              <View style={styles.confirmRow}>
+                <View style={styles.confirmAvatarCircle}>
+                  <Ionicons name="person" size={24} color={BitcoinColors.orange} />
+                </View>
+                <View style={styles.confirmInfo}>
+                  <Text style={styles.confirmName}>{recipientProfile?.full_name ?? 'User'}</Text>
+                  <Text style={styles.confirmDetail}>
+                    {recipientProfile?.email ?? recipientProfile?.phone}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.confirmDivider} />
+
+              <View style={styles.confirmDataRow}>
+                <Text style={styles.confirmDataLabel}>Amount (PHP)</Text>
+                <Text style={styles.confirmDataValue}>{formatCurrency(numAmount)}</Text>
+              </View>
+
+              <View style={styles.confirmDataRow}>
+                <Text style={styles.confirmDataLabel}>Sats Equivalent</Text>
+                <Text style={[styles.confirmDataValue, { color: BitcoinColors.gold }]}>
+                  ⚡ {satsAmount.toLocaleString()} sats
                 </Text>
               </View>
-            </View>
 
-            <View style={styles.confirmAmountBox}>
-              <Text style={styles.confirmAmountLabel}>Amount</Text>
-              <Text style={styles.confirmAmount}>{formatCurrency(parseFloat(amount) || 0)}</Text>
-            </View>
-
-            {note ? (
-              <View style={styles.confirmNoteBox}>
-                <Text style={styles.confirmNoteLabel}>Note</Text>
-                <Text style={styles.confirmNote}>{note}</Text>
+              <View style={styles.confirmDataRow}>
+                <Text style={styles.confirmDataLabel}>Routing Fee</Text>
+                <Text style={[styles.confirmDataValue, { color: BitcoinColors.green }]}>FREE (0 sats)</Text>
               </View>
-            ) : null}
+
+              {note ? (
+                <View style={styles.confirmDataRow}>
+                  <Text style={styles.confirmDataLabel}>Memo</Text>
+                  <Text style={styles.confirmDataValue}>{note}</Text>
+                </View>
+              ) : null}
+            </View>
 
             <View style={styles.confirmButtons}>
               <TouchableOpacity style={styles.cancelBtn} onPress={resetForm}>
-                <Text style={styles.cancelBtnText}>Cancel</Text>
+                <Text style={styles.cancelBtnText}>Back</Text>
               </TouchableOpacity>
+
               <TouchableOpacity
                 style={[styles.sendBtn, loading && styles.btnDisabled]}
                 onPress={handleSend}
-                disabled={loading}>
-                <Ionicons name="paper-plane" size={18} color="#fff" />
-                <Text style={styles.sendBtnText}>{loading ? 'Sending...' : 'Send'}</Text>
+                disabled={loading}
+                activeOpacity={0.85}>
+                <LinearGradient
+                  colors={Brand.gradientButton}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.sendBtnGradient}>
+                  <Ionicons name="flash" size={18} color="#07090E" />
+                  <Text style={styles.sendBtnText}>{loading ? 'Broadcasting...' : 'Broadcast Payment'}</Text>
+                </LinearGradient>
               </TouchableOpacity>
             </View>
           </View>
         )}
+
+        <View style={{ height: 40 }} />
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#F5F5F5' },
-  scroll: { flexGrow: 1, paddingBottom: 30 },
-  header: { paddingTop: 56, paddingHorizontal: 20, paddingBottom: 16, backgroundColor: Brand.primary },
-  headerTitle: { fontSize: 24, fontWeight: '800', color: '#fff' },
-  headerSub: { fontSize: 14, color: 'rgba(255,255,255,0.7)', marginTop: 4 },
-  card: {
-    backgroundColor: '#fff',
-    marginHorizontal: 20,
-    marginTop: 20,
-    borderRadius: 16,
-    padding: 20,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
+  root: {
+    flex: 1,
+    backgroundColor: BitcoinColors.darkBg,
   },
-  label: { fontSize: 13, fontWeight: '600', color: '#6B7280', marginBottom: 6, marginTop: 12 },
-  input: {
+  scroll: {
+    paddingBottom: 24,
+  },
+  header: {
+    paddingTop: 54,
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+  },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 10,
+  },
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
+  },
+  balancePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: BitcoinColors.cardBg,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    fontSize: 16,
-    color: '#1A1A2E',
-    backgroundColor: '#FAFAFA',
+    borderColor: BitcoinColors.border,
+    alignSelf: 'flex-start',
+    gap: 6,
   },
-  amountRow: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, backgroundColor: '#FAFAFA' },
-  currencySymbol: { fontSize: 22, fontWeight: '700', color: '#1A1A2E', paddingLeft: 14 },
-  amountInput: { flex: 1, paddingHorizontal: 10, paddingVertical: 13, fontSize: 24, fontWeight: '700', color: '#1A1A2E' },
-  noteInput: { height: 80, textAlignVertical: 'top' },
-  btn: { backgroundColor: Brand.primary, borderRadius: 10, paddingVertical: 15, alignItems: 'center', marginTop: 20 },
-  btnDisabled: { opacity: 0.6 },
-  btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  confirmTitle: { fontSize: 20, fontWeight: '700', color: '#1A1A2E', textAlign: 'center', marginBottom: 20 },
-  confirmRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
-  confirmInfo: { marginLeft: 14 },
-  confirmName: { fontSize: 17, fontWeight: '700', color: '#1A1A2E' },
-  confirmDetail: { fontSize: 14, color: '#6B7280', marginTop: 2 },
-  confirmAmountBox: { backgroundColor: '#F5F5F5', borderRadius: 12, padding: 16, alignItems: 'center', marginBottom: 12 },
-  confirmAmountLabel: { fontSize: 13, color: '#6B7280', marginBottom: 4 },
-  confirmAmount: { fontSize: 32, fontWeight: '800', color: '#1A1A2E' },
-  confirmNoteBox: { backgroundColor: '#F5F5F5', borderRadius: 12, padding: 14, marginBottom: 12 },
-  confirmNoteLabel: { fontSize: 12, color: '#6B7280', marginBottom: 4 },
-  confirmNote: { fontSize: 14, color: '#1A1A2E' },
-  confirmButtons: { flexDirection: 'row', gap: 12, marginTop: 16 },
-  cancelBtn: { flex: 1, borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
-  cancelBtnText: { fontSize: 15, fontWeight: '600', color: '#6B7280' },
-  sendBtn: { flex: 1, backgroundColor: '#36B37E', borderRadius: 10, paddingVertical: 14, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 },
-  sendBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  balancePillLabel: {
+    fontSize: 11,
+    color: BitcoinColors.textSecondary,
+    fontWeight: '600',
+  },
+  balancePillValue: {
+    fontSize: 13,
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
+  balancePillSats: {
+    fontSize: 11,
+    color: BitcoinColors.gold,
+    fontWeight: '700',
+  },
+  card: {
+    marginHorizontal: 20,
+    backgroundColor: BitcoinColors.cardBg,
+    borderRadius: 22,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+  },
+  label: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: BitcoinColors.textSecondary,
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  inputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: BitcoinColors.cardElevated,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+  },
+  inputIcon: {
+    marginRight: 8,
+  },
+  input: {
+    flex: 1,
+    paddingVertical: 14,
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  inputSingle: {
+    backgroundColor: BitcoinColors.cardElevated,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: '#FFFFFF',
+    fontSize: 14,
+  },
+  amountBox: {
+    backgroundColor: BitcoinColors.cardElevated,
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.35)',
+    borderRadius: 16,
+    padding: 16,
+  },
+  amountInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  currencySymbol: {
+    fontSize: 32,
+    fontWeight: '900',
+    color: BitcoinColors.orange,
+    marginRight: 10,
+  },
+  amountInput: {
+    flex: 1,
+    fontSize: 32,
+    fontWeight: '900',
+    color: '#FFFFFF',
+  },
+  satsConversionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
+    gap: 4,
+  },
+  satsConversionIcon: {
+    color: BitcoinColors.lightning,
+    fontSize: 12,
+  },
+  satsConversionText: {
+    color: BitcoinColors.gold,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  chipsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  chip: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+    borderRadius: 10,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  chipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: BitcoinColors.textSecondary,
+  },
+  chipMax: {
+    backgroundColor: 'rgba(247, 147, 26, 0.12)',
+    borderColor: 'rgba(247, 147, 26, 0.35)',
+  },
+  chipMaxText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: BitcoinColors.orange,
+  },
+  noteInput: {
+    height: 70,
+    textAlignVertical: 'top',
+  },
+  feeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 18,
+    gap: 8,
+  },
+  feeBannerText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#E2E8F0',
+  },
+  btnWrap: {
+    borderRadius: 16,
+    overflow: 'hidden',
+    marginTop: 22,
+  },
+  btnGradient: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 15,
+    gap: 8,
+  },
+  btnText: {
+    color: '#07090E',
+    fontWeight: '800',
+    fontSize: 15,
+    letterSpacing: 0.2,
+  },
+  btnDisabled: {
+    opacity: 0.6,
+  },
+  confirmHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  confirmTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    marginTop: 10,
+  },
+  confirmSubtitle: {
+    fontSize: 12,
+    color: BitcoinColors.textSecondary,
+    marginTop: 4,
+  },
+  confirmCardBox: {
+    backgroundColor: BitcoinColors.cardElevated,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+    marginBottom: 22,
+  },
+  confirmRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  confirmAvatarCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(247, 147, 26, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  confirmInfo: {
+    flex: 1,
+  },
+  confirmName: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  confirmDetail: {
+    fontSize: 12,
+    color: BitcoinColors.textSecondary,
+    marginTop: 2,
+  },
+  confirmDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    marginVertical: 14,
+  },
+  confirmDataRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+  },
+  confirmDataLabel: {
+    fontSize: 13,
+    color: BitcoinColors.textSecondary,
+  },
+  confirmDataValue: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  confirmButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  cancelBtn: {
+    flex: 1,
+    backgroundColor: BitcoinColors.cardElevated,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  cancelBtnText: {
+    color: BitcoinColors.textSecondary,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  sendBtn: {
+    flex: 2,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  sendBtnGradient: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 14,
+    gap: 8,
+  },
+  sendBtnText: {
+    color: '#07090E',
+    fontWeight: '800',
+    fontSize: 14,
+  },
 });
