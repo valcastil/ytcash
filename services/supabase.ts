@@ -53,16 +53,22 @@ export interface ScannedCash {
 
 // ─── User helpers ───────────────────────────────────────
 export async function getProfile(userId: string): Promise<UserProfile | null> {
-  const { data, error } = await supabase
-    .from('users')
-    .select('*')
-    .eq('id', userId)
-    .single();
-  if (error) {
-    console.error('getProfile error:', error.message);
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    if (error) {
+      if (error.code !== 'PGRST205' && error.code !== 'PGRST116') {
+        console.warn('getProfile error:', error.message);
+      }
+      return null;
+    }
+    return data;
+  } catch {
     return null;
   }
-  return data;
 }
 
 export async function upsertProfile(profile: Partial<UserProfile> & { id: string }) {
@@ -96,14 +102,23 @@ export async function createTransaction(tx: Omit<Transaction, 'id' | 'created_at
 }
 
 export async function getTransactions(userId: string, limit = 20) {
-  const { data, error } = await supabase
-    .from('transactions')
-    .select('*')
-    .or(`from_user.eq.${userId},to_user.eq.${userId}`)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return data ?? [];
+  try {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .or(`from_user.eq.${userId},to_user.eq.${userId}`)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) {
+      if (error.code !== 'PGRST205') {
+        console.warn('getTransactions error:', error.message);
+      }
+      return [];
+    }
+    return data ?? [];
+  } catch {
+    return [];
+  }
 }
 
 // ─── Cash scanning helpers ──────────────────────────────

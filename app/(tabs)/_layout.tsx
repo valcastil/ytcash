@@ -2,11 +2,18 @@ import { Tabs } from 'expo-router';
 import React from 'react';
 import { View, StyleSheet, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { BitcoinColors } from '@/constants/theme';
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
+
+  // Dynamic bottom padding to safely clear Android gesture/3-button navigation and iOS home indicator
+  const bottomPadding = Math.max(insets.bottom, Platform.OS === 'ios' ? 24 : 12);
+  const tabBarHeight = 56 + bottomPadding;
+
   return (
     <Tabs
       screenOptions={{
@@ -18,10 +25,10 @@ export default function TabLayout() {
           backgroundColor: '#0A0D14',
           borderTopColor: '#1A2234',
           borderTopWidth: 1,
-          height: Platform.OS === 'ios' ? 84 : 68,
-          paddingBottom: Platform.OS === 'ios' ? 24 : 10,
+          height: tabBarHeight,
+          paddingBottom: bottomPadding,
           paddingTop: 8,
-          elevation: 8,
+          elevation: 10,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: -4 },
           shadowOpacity: 0.35,

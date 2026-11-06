@@ -7,6 +7,9 @@ import { supabase, getProfile, upsertProfile, type UserProfile } from '@/service
 
 // Warm up and complete browser auth session if redirected
 WebBrowser.maybeCompleteAuthSession();
+if (Platform.OS !== 'web') {
+  WebBrowser.warmUpAsync();
+}
 
 interface AuthState {
   session: Session | null;
@@ -23,6 +26,9 @@ interface AuthState {
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
+
+// Track processed codes to avoid duplicate/colliding exchanges across deep links
+const processedAuthCodes = new Set<string>();
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -47,7 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        await loadProfile(session.user);
+        loadProfile(session.user);
       } else {
         setProfile(null);
         setLoading(false);
@@ -131,17 +137,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (params.code) {
+      if (processedAuthCodes.has(params.code)) return;
+      processedAuthCodes.add(params.code);
+
       const { data, error } = await supabase.auth.exchangeCodeForSession(params.code);
       if (error) throw error;
       if (data.session) {
         setSession(data.session);
         setUser(data.session.user);
-        await loadProfile(data.session.user);
+        setLoading(false);
+        // Load profile in background without blocking the UI transition
+        loadProfile(data.session.user);
       }
       return;
     }
 
     if (params.access_token) {
+      const tokenKey = params.access_token.slice(0, 32);
+      if (processedAuthCodes.has(tokenKey)) return;
+      processedAuthCodes.add(tokenKey);
+
       const { data, error } = await supabase.auth.setSession({
         access_token: params.access_token,
         refresh_token: params.refresh_token ?? '',
@@ -150,7 +165,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (data.session) {
         setSession(data.session);
         setUser(data.session.user);
-        await loadProfile(data.session.user);
+        setLoading(false);
+        // Load profile in background without blocking the UI transition
+        loadProfile(data.session.user);
       }
       return;
     }
@@ -163,36 +180,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    // Set optimistic profile instantly from user metadata so UI is never blocked
+    const fallbackName =
+      u.user_metadata?.full_name ||
+      u.user_metadata?.name ||
+      u.email?.split('@')[0] ||
+      'Bitcoin Holder';
+    const fallbackAvatar =
+      u.user_metadata?.avatar_url ||
+      u.user_metadata?.picture ||
+      null;
+
+    setProfile((prev) => prev ?? {
+      id: u.id,
+      email: u.email ?? null,
+      phone: u.phone ?? null,
+      full_name: fallbackName,
+      avatar_url: fallbackAvatar,
+      balance: 0,
+      kyc_verified: false,
+      created_at: u.created_at ?? new Date().toISOString(),
+    });
+
     try {
       let p = await getProfile(u.id);
 
       // If profile does not exist yet (e.g. newly signed up via Google or database trigger was not executed)
       if (!p) {
-        const fullName =
-          u.user_metadata?.full_name ||
-          u.user_metadata?.name ||
-          u.email?.split('@')[0] ||
-          'Bitcoin Holder';
-        const avatarUrl =
-          u.user_metadata?.avatar_url ||
-          u.user_metadata?.picture ||
-          null;
-
         try {
           p = await upsertProfile({
             id: u.id,
             email: u.email ?? null,
-            full_name: fullName,
-            avatar_url: avatarUrl,
+            full_name: fallbackName,
+            avatar_url: fallbackAvatar,
             balance: 0,
             kyc_verified: false,
           });
-        } catch (upsertErr) {
-          console.warn('Profile auto-creation warning:', upsertErr);
+        } catch (upsertErr: any) {
+          if (upsertErr?.code !== 'PGRST205') {
+            console.warn('Profile auto-creation warning:', upsertErr);
+          }
         }
       }
 
-      setProfile(p);
+      if (p) {
+        setProfile(p);
+      }
     } catch (e) {
       console.error('Failed to load profile:', e);
     } finally {
@@ -240,6 +273,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           provider: 'google',
           options: {
             redirectTo: redirectUrl,
+            queryParams: {
+              access_type: 'offline',
+              prompt: 'select_account',
+            },
           },
         });
         if (error) throw error;
@@ -254,13 +291,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         options: {
           redirectTo: redirectUrl,
           skipBrowserRedirect: true,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'select_account',
+          },
         },
       });
 
       if (error) throw error;
       if (!data?.url) throw new Error('No authorization URL returned from Supabase.');
 
-      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl, {
+        preferEphemeralSession: false,
+        showInRecents: false,
+      });
 
       if (result.type === 'success' && result.url) {
         await handleAuthUrl(result.url);

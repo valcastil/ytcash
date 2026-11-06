@@ -3,6 +3,7 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '@/contexts/auth';
@@ -33,7 +34,7 @@ function AuthGate() {
 
     if (!session && !inAuthGroup && !isCallback) {
       router.replace('/(auth)/login');
-    } else if (session && inAuthGroup) {
+    } else if (session && (inAuthGroup || isCallback)) {
       router.replace('/(tabs)');
     }
   }, [session, loading, segments]);
@@ -66,11 +67,13 @@ function AuthGate() {
 
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <ThemeProvider value={BitcoinNavTheme}>
-        <AuthGate />
-        <StatusBar style="light" />
-      </ThemeProvider>
-    </AuthProvider>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <ThemeProvider value={BitcoinNavTheme}>
+          <AuthGate />
+          <StatusBar style="light" />
+        </ThemeProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }

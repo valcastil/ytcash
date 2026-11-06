@@ -1,6 +1,7 @@
 -- ============================================================
 -- YTCash Supabase Database Schema
--- Run this in your Supabase SQL Editor to set up the database.
+-- Run this in your Supabase SQL Editor:
+-- https://supabase.com/dashboard/project/agsxwjunxrtubpjnfkri/sql/new
 -- ============================================================
 
 -- 1. Users table (extends Supabase auth.users)
@@ -18,6 +19,11 @@ create table if not exists public.users (
 -- Enable Row Level Security
 alter table public.users enable row level security;
 
+-- Drop existing policies if any to allow safe re-runs
+drop policy if exists "Users can view own profile" on public.users;
+drop policy if exists "Users can update own profile" on public.users;
+drop policy if exists "Users can insert own profile" on public.users;
+
 -- Users can read their own profile
 create policy "Users can view own profile"
   on public.users for select
@@ -28,7 +34,7 @@ create policy "Users can update own profile"
   on public.users for update
   using (auth.uid() = id);
 
--- Allow insert from server (service role) or authenticated user matching id
+-- Allow insert from authenticated user matching id
 create policy "Users can insert own profile"
   on public.users for insert
   with check (auth.uid() = id);
@@ -49,6 +55,9 @@ create table if not exists public.transactions (
 );
 
 alter table public.transactions enable row level security;
+
+drop policy if exists "Users can view own transactions" on public.transactions;
+drop policy if exists "Users can create transactions" on public.transactions;
 
 -- Users can see transactions they're involved in
 create policy "Users can view own transactions"
@@ -73,6 +82,9 @@ create table if not exists public.scanned_cash (
 );
 
 alter table public.scanned_cash enable row level security;
+
+drop policy if exists "Users can view own scanned cash" on public.scanned_cash;
+drop policy if exists "Users can insert scanned cash" on public.scanned_cash;
 
 create policy "Users can view own scanned cash"
   on public.scanned_cash for select
@@ -109,7 +121,7 @@ begin
 end;
 $$;
 
--- 5. Trigger: auto-create user profile on signup
+-- 5. Trigger: auto-create user profile on signup (supports Google OAuth metadata)
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -117,12 +129,18 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.users (id, email, full_name)
+  insert into public.users (id, email, full_name, avatar_url)
   values (
     new.id,
     new.email,
-    coalesce(new.raw_user_meta_data->>'full_name', '')
-  );
+    coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', ''),
+    coalesce(new.raw_user_meta_data->>'avatar_url', new.raw_user_meta_data->>'picture', null)
+  )
+  on conflict (id) do update
+  set
+    email = excluded.email,
+    full_name = coalesce(nullif(excluded.full_name, ''), users.full_name),
+    avatar_url = coalesce(excluded.avatar_url, users.avatar_url);
   return new;
 end;
 $$;
@@ -133,6 +151,30 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
--- 6. Enable realtime for live updates
-alter publication supabase_realtime add table public.users;
-alter publication supabase_realtime add table public.transactions;
+-- 6. Backfill existing users (for users who already signed up with Google before table creation)
+insert into public.users (id, email, full_name, avatar_url)
+select 
+  id, 
+  email, 
+  coalesce(raw_user_meta_data->>'full_name', raw_user_meta_data->>'name', ''),
+  coalesce(raw_user_meta_data->>'avatar_url', raw_user_meta_data->>'picture', null)
+from auth.users
+on conflict (id) do nothing;
+
+-- 7. Enable realtime for live updates
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables 
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'users'
+  ) then
+    alter publication supabase_realtime add table public.users;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables 
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'transactions'
+  ) then
+    alter publication supabase_realtime add table public.transactions;
+  end if;
+end $$;
