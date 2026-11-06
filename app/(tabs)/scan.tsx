@@ -238,50 +238,49 @@ export default function CashScannerScreen() {
   // Camera phase
   return (
     <View style={styles.cameraContainer}>
-      <CameraView ref={cameraRef} style={styles.camera} facing="back">
-        <View style={styles.cameraOverlay}>
-          {/* Header */}
-          <View style={styles.cameraHeader}>
-            <View style={styles.hudBadge}>
-              <View style={styles.hudPulse} />
-              <Text style={styles.hudText}>⚡ AI VISION SCANNER</Text>
-            </View>
-            <Text style={styles.cameraTitle}>Scan Cash</Text>
-            <Text style={styles.cameraSub}>Align any supported banknote inside the reticle</Text>
+      <CameraView ref={cameraRef} style={styles.camera} facing="back" />
+      <View style={styles.cameraOverlay}>
+        {/* Header */}
+        <View style={styles.cameraHeader}>
+          <View style={styles.hudBadge}>
+            <View style={styles.hudPulse} />
+            <Text style={styles.hudText}>⚡ AI VISION SCANNER</Text>
           </View>
+          <Text style={styles.cameraTitle}>Scan Cash</Text>
+          <Text style={styles.cameraSub}>Align any supported banknote inside the reticle</Text>
+        </View>
 
-          {/* Cyberpunk Bitcoin Reticle */}
-          <View style={styles.scanFrame}>
-            <View style={[styles.corner, styles.topLeft]} />
-            <View style={[styles.corner, styles.topRight]} />
-            <View style={[styles.corner, styles.bottomLeft]} />
-            <View style={[styles.corner, styles.bottomRight]} />
+        {/* Cyberpunk Bitcoin Reticle */}
+        <View style={styles.scanFrame}>
+          <View style={[styles.corner, styles.topLeft]} />
+          <View style={[styles.corner, styles.topRight]} />
+          <View style={[styles.corner, styles.bottomLeft]} />
+          <View style={[styles.corner, styles.bottomRight]} />
 
-            {/* Center Crosshair */}
-            <View style={styles.crosshair}>
-              <Ionicons name="add" size={28} color="rgba(247, 147, 26, 0.4)" />
-            </View>
-          </View>
-
-          {/* Footer Controls */}
-          <View style={styles.cameraFooter}>
-            <View style={styles.supportedPill}>
-              <Text style={styles.supportedText}>
-                Supported: PHP 🇵🇭 • USD 🇺🇸 • EUR 🇪🇺 • AED 🇦🇪
-              </Text>
-            </View>
-
-            <TouchableOpacity
-              style={styles.captureBtn}
-              onPress={captureAndDetect}
-              activeOpacity={0.85}>
-              <LinearGradient colors={Brand.gradientButton} style={styles.captureBtnInner}>
-                <Ionicons name="scan" size={32} color="#07090E" />
-              </LinearGradient>
-            </TouchableOpacity>
+          {/* Center Crosshair */}
+          <View style={styles.crosshair}>
+            <Ionicons name="add" size={28} color="rgba(247, 147, 26, 0.4)" />
           </View>
         </View>
-      </CameraView>
+
+        {/* Footer Controls */}
+        <View style={styles.cameraFooter}>
+          <View style={styles.supportedPill}>
+            <Text style={styles.supportedText}>
+              Supported: PHP 🇵🇭 • USD 🇺🇸 • EUR 🇪🇺 • AED 🇦🇪
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.captureBtn}
+            onPress={captureAndDetect}
+            activeOpacity={0.85}>
+            <LinearGradient colors={Brand.gradientButton} style={styles.captureBtnInner}>
+              <Ionicons name="scan" size={32} color="#07090E" />
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      </View>
     </View>
   );
 }
@@ -351,10 +350,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
   },
   camera: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
   },
   cameraOverlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'space-between',
     backgroundColor: 'rgba(7, 9, 14, 0.45)',
   },

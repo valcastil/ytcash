@@ -81,53 +81,53 @@ export default function QRScannerScreen() {
         style={styles.camera}
         facing="back"
         barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-        onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}>
-        <View style={styles.overlay}>
-          {/* Top Bar */}
-          <View style={styles.topBar}>
-            <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn} activeOpacity={0.7}>
-              <Ionicons name="close" size={24} color="#FFFFFF" />
-            </TouchableOpacity>
+        onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+      />
+      <View style={styles.overlay}>
+        {/* Top Bar */}
+        <View style={styles.topBar}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn} activeOpacity={0.7}>
+            <Ionicons name="close" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
 
-            <View style={styles.hudBadge}>
-              <View style={styles.hudPulse} />
-              <Text style={styles.hudText}>⚡ LIGHTNING QR</Text>
-            </View>
-
-            <View style={{ width: 40 }} />
+          <View style={styles.hudBadge}>
+            <View style={styles.hudPulse} />
+            <Text style={styles.hudText}>⚡ LIGHTNING QR</Text>
           </View>
 
-          {/* Center Scan Area */}
-          <View style={styles.centerArea}>
-            <Text style={styles.scanTitle}>Scan Payment QR</Text>
-            <Text style={styles.scanSub}>Point at any Bitcoin Lightning or YTCash code</Text>
+          <View style={{ width: 40 }} />
+        </View>
 
-            <View style={styles.scanFrame}>
-              <View style={[styles.corner, styles.tl]} />
-              <View style={[styles.corner, styles.tr]} />
-              <View style={[styles.corner, styles.bl]} />
-              <View style={[styles.corner, styles.br]} />
+        {/* Center Scan Area */}
+        <View style={styles.centerArea}>
+          <Text style={styles.scanTitle}>Scan Payment QR</Text>
+          <Text style={styles.scanSub}>Point at any Bitcoin Lightning or YTCash code</Text>
 
-              <View style={styles.crosshair}>
-                <Ionicons name="scan-outline" size={48} color="rgba(247, 147, 26, 0.45)" />
-              </View>
+          <View style={styles.scanFrame}>
+            <View style={[styles.corner, styles.tl]} />
+            <View style={[styles.corner, styles.tr]} />
+            <View style={[styles.corner, styles.bl]} />
+            <View style={[styles.corner, styles.br]} />
+
+            <View style={styles.crosshair}>
+              <Ionicons name="scan-outline" size={48} color="rgba(247, 147, 26, 0.45)" />
             </View>
-          </View>
-
-          {/* Bottom Bar */}
-          <View style={styles.bottomBar}>
-            <TouchableOpacity
-              style={styles.myQrBtn}
-              onPress={() =>
-                Alert.alert('Personal Receive QR', 'Your lightning address and payment QR are active.')
-              }
-              activeOpacity={0.8}>
-              <Ionicons name="qr-code" size={20} color={BitcoinColors.orange} />
-              <Text style={styles.myQrText}>Receive via My QR</Text>
-            </TouchableOpacity>
           </View>
         </View>
-      </CameraView>
+
+        {/* Bottom Bar */}
+        <View style={styles.bottomBar}>
+          <TouchableOpacity
+            style={styles.myQrBtn}
+            onPress={() =>
+              Alert.alert('Personal Receive QR', 'Your lightning address and payment QR are active.')
+            }
+            activeOpacity={0.8}>
+            <Ionicons name="qr-code" size={20} color={BitcoinColors.orange} />
+            <Text style={styles.myQrText}>Receive via My QR</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     </View>
   );
 }
@@ -138,7 +138,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
   },
   camera: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
   },
   permissionContainer: {
     flex: 1,
@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   overlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'space-between',
     backgroundColor: 'rgba(7, 9, 14, 0.55)',
   },
