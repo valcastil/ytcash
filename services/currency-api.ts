@@ -1,7 +1,8 @@
 import { DEFAULT_CURRENCY } from '@/constants/currencies';
 
-const API_BASE = 'https://v6.exchangerate-api.com/v6';
-const API_KEY = process.env.EXPO_PUBLIC_EXCHANGE_RATE_API_KEY ?? 'demo';
+// Open ExchangeRate API endpoint (no API key required)
+const OPEN_API_URL = 'https://open.er-api.com/v6/latest';
+const API_KEY = process.env.EXPO_PUBLIC_EXCHANGE_RATE_API_KEY;
 
 export interface ExchangeRates {
   base: string;
@@ -19,34 +20,68 @@ export async function fetchExchangeRates(base: string = 'PHP'): Promise<Exchange
     return cachedRates;
   }
 
+  const hasValidCustomKey =
+    Boolean(API_KEY) &&
+    API_KEY !== 'demo' &&
+    API_KEY !== 'your-exchangerate-api-key' &&
+    !API_KEY!.includes('your-');
+
+  // Try custom key if configured, otherwise use the open public endpoint directly
+  const primaryUrl = hasValidCustomKey
+    ? `https://v6.exchangerate-api.com/v6/${API_KEY}/latest/${base}`
+    : `${OPEN_API_URL}/${base}`;
+
   try {
-    const response = await fetch(`${API_BASE}/${API_KEY}/latest/${base}`);
-    const json = await response.json();
+    let response = await fetch(primaryUrl);
+    let json = await response.json();
+
+    // If custom key had an issue (e.g. inactive-account or quota exceeded), fall back to the open public endpoint
+    if (json.result !== 'success' && hasValidCustomKey) {
+      response = await fetch(`${OPEN_API_URL}/${base}`);
+      json = await response.json();
+    }
 
     if (json.result === 'success') {
+      const rates = json.conversion_rates ?? json.rates ?? {};
       cachedRates = {
-        base: json.base_code,
-        rates: json.conversion_rates,
-        lastUpdated: json.time_last_update_utc,
+        base: json.base_code ?? base,
+        rates,
+        lastUpdated: json.time_last_update_utc ?? new Date().toISOString(),
       };
       cacheTimestamp = now;
       return cachedRates;
     }
-    throw new Error(json['error-type'] ?? 'Exchange rate fetch failed');
-  } catch (error) {
-    // Fallback rates if API fails
-    console.warn('Using fallback exchange rates:', error);
-    return {
-      base: 'PHP',
-      rates: {
-        PHP: 1,
-        USD: 0.0178,
-        EUR: 0.0163,
-        AED: 0.0654,
-      },
-      lastUpdated: new Date().toISOString(),
-    };
+  } catch {
+    // If primary failed due to network, try open endpoint once
+    try {
+      const fallbackRes = await fetch(`${OPEN_API_URL}/${base}`);
+      const fallbackJson = await fallbackRes.json();
+      if (fallbackJson.result === 'success') {
+        const rates = fallbackJson.conversion_rates ?? fallbackJson.rates ?? {};
+        cachedRates = {
+          base: fallbackJson.base_code ?? base,
+          rates,
+          lastUpdated: fallbackJson.time_last_update_utc ?? new Date().toISOString(),
+        };
+        cacheTimestamp = now;
+        return cachedRates;
+      }
+    } catch {
+      // Both attempts failed (e.g. offline device)
+    }
   }
+
+  // Offline fallback rates when no internet connection is available
+  return {
+    base: 'PHP',
+    rates: {
+      PHP: 1,
+      USD: 0.0178,
+      EUR: 0.0163,
+      AED: 0.0654,
+    },
+    lastUpdated: new Date().toISOString(),
+  };
 }
 
 export async function convertCurrency(
