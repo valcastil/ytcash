@@ -241,8 +241,29 @@ export default function HomeScreen() {
         </View>
       </View>
 
-      {/* Users Online — opens the live map */}
+      {/* P2P Cash Delivery */}
       <View style={styles.section}>
+        <TouchableOpacity
+          style={[styles.onlineCard, styles.p2pCard]}
+          onPress={() => router.push('/p2p')}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="Open P2P cash delivery">
+          <View style={[styles.onlineIconWrap, styles.p2pIconWrap]}>
+            <Ionicons name="people" size={22} color={BitcoinColors.orange} />
+          </View>
+          <View style={styles.onlineTextWrap}>
+            <Text style={styles.onlineTitle}>P2P Cash Delivery</Text>
+            <Text style={[styles.onlineSub, styles.p2pSub]}>
+              Send cash through the partner closest to your receiver
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={BitcoinColors.textMuted} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Users Online — opens the live map */}
+      <View style={[styles.section, styles.sectionTight]}>
         <TouchableOpacity
           style={styles.onlineCard}
           onPress={() => router.push('/online-map')}
@@ -715,6 +736,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: BitcoinColors.textSecondary,
+  },
+  sectionTight: {
+    marginTop: 12,
+  },
+  p2pCard: {
+    borderColor: 'rgba(247, 147, 26, 0.35)',
+  },
+  p2pIconWrap: {
+    backgroundColor: 'rgba(247, 147, 26, 0.12)',
+    borderColor: 'rgba(247, 147, 26, 0.3)',
+  },
+  p2pSub: {
+    marginTop: 3,
+    lineHeight: 17,
   },
   liveIndicator: {
     flexDirection: 'row',

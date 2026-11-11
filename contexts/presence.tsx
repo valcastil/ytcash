@@ -1,16 +1,15 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Location from 'expo-location';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 import { useAuth } from '@/contexts/auth';
+import { readRoundedLocation, requestRoundedLocation } from '@/services/location';
 import { supabase } from '@/services/supabase';
 import {
   ONLINE_CHANNEL,
   parsePresenceState,
   publicDisplayName,
-  roundCoords,
   type Coords,
   type OnlineUser,
   type PresencePayload,
@@ -36,25 +35,6 @@ interface PresenceState {
 const PresenceContext = createContext<PresenceState | undefined>(undefined);
 
 const shareKey = (userId: string) => `ytcash.shareLocation.${userId}`;
-
-async function readRoundedLocation(): Promise<Coords | null> {
-  try {
-    const { status } = await Location.getForegroundPermissionsAsync();
-    if (status !== 'granted') return null;
-
-    // A recent cached fix is plenty for a ~1 km pin and avoids waking the GPS.
-    const last = await Location.getLastKnownPositionAsync({ maxAge: 10 * 60 * 1000 }).catch(
-      () => null,
-    );
-    const position =
-      last ?? (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }));
-
-    return roundCoords(position.coords.latitude, position.coords.longitude);
-  } catch (e) {
-    console.warn('Presence: could not read location:', e);
-    return null;
-  }
-}
 
 export function PresenceProvider({ children }: { children: React.ReactNode }) {
   const { user, profile } = useAuth();
@@ -182,23 +162,13 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
 
   const enableLocationSharing = useCallback(async (): Promise<ShareResult> => {
     if (!userId) return 'unavailable';
-    try {
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== 'granted') {
-        return permission.canAskAgain ? 'denied' : 'blocked';
-      }
+    const result = await requestRoundedLocation();
+    if (result.status !== 'granted') return result.status;
 
-      const coords = await readRoundedLocation();
-      if (!coords) return 'unavailable';
-
-      setMyLocation(coords);
-      setShareLocation(true);
-      await AsyncStorage.setItem(shareKey(userId), '1').catch(() => {});
-      return 'granted';
-    } catch (e) {
-      console.warn('Presence: enabling location sharing failed:', e);
-      return 'unavailable';
-    }
+    setMyLocation(result.coords);
+    setShareLocation(true);
+    await AsyncStorage.setItem(shareKey(userId), '1').catch(() => {});
+    return 'granted';
   }, [userId]);
 
   const disableLocationSharing = useCallback(async () => {

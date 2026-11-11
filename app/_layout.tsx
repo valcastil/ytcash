@@ -63,6 +63,9 @@ function AuthGate() {
       <Stack.Screen name="qr-scanner" options={{ headerShown: false, presentation: 'fullScreenModal' }} />
       <Stack.Screen name="add-money" options={{ headerShown: false }} />
       <Stack.Screen name="online-map" options={{ headerShown: false }} />
+      <Stack.Screen name="p2p/index" options={{ headerShown: false }} />
+      <Stack.Screen name="p2p/new" options={{ headerShown: false }} />
+      <Stack.Screen name="p2p/[id]" options={{ headerShown: false }} />
     </Stack>
   );
 }

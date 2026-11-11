@@ -10,6 +10,7 @@ A GCash-style digital wallet app for Filipinos with AI-powered multi-currency ca
 - **QR Payments** — Scan and generate QR codes for payments
 - **Multi-Currency** — Live exchange rates and automatic PHP conversion
 - **Secure Auth** — Email/password and phone OTP authentication via Supabase
+- **P2P Cash Delivery** — Send cash to anyone in the Philippines through the closest cash partner, with escrow
 - **Users Online Map** — Live map of signed-in users, with opt-in approximate location
 
 ## Tech Stack
@@ -69,6 +70,7 @@ app/
   qr-scanner.tsx       QR code scanner
   add-money.tsx        Add funds via Stripe
   online-map.tsx       Live map of users online
+  p2p/                 P2P cash delivery (hub, new order, order detail)
 contexts/
   auth.tsx             Authentication context & provider
   presence.tsx         Who is online + location sharing choice
@@ -82,6 +84,22 @@ constants/
 supabase/
   migration.sql        Database schema & RLS policies
 ```
+
+## P2P Cash Delivery
+
+Open it from the **P2P Cash Delivery** card on the Wallet screen. It works like an escrowed P2P trade:
+
+1. **Sender** enters an amount (₱100 to ₱50,000) and the receiver's name, mobile number and address. The address is looked up to get its location.
+2. The amount leaves the sender's wallet into **escrow**, and the server assigns the **available cash partner closest to the receiver** (within 30 km). If nobody is in range, nothing is charged.
+3. The **partner** accepts, or declines so the order passes to the next closest partner. If no one is left, the sender is refunded.
+4. The sender gets a **6-digit release code** and passes it to the receiver. The receiver gives it to the partner after counting the cash; entering it pays the partner from escrow. The sender can also release the payment directly.
+5. The sender can cancel for a full refund until a partner accepts, or after 24 hours if an accepted order was never delivered.
+
+Any user can become a partner with **Deliver cash near me** on the Deliver tab. Their area (rounded to about 1 km) is stored so they can be matched while offline; other users never see it.
+
+- **Setup:** re-run `supabase/migration.sql` (section 9). All balance changes for P2P happen inside database functions; the app cannot write to the P2P tables directly.
+- **Address lookup:** OpenStreetMap Nominatim by default, limited to light use. For production set `EXPO_PUBLIC_GEOCODER_URL` to a hosted Nominatim-compatible service.
+- **Not included yet:** partner fees, ratings, in-app chat and dispute handling.
 
 ## Users Online Map
 
