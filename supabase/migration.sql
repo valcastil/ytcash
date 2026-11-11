@@ -178,3 +178,26 @@ begin
     alter publication supabase_realtime add table public.transactions;
   end if;
 end $$;
+
+-- 8. Users Online map: private Realtime Presence channel
+-- Presence is ephemeral (no table). These policies make the 'online-users'
+-- channel private, so only signed-in users can see or announce who is online;
+-- the public anon key on its own cannot join.
+drop policy if exists "Signed-in users can see who is online" on realtime.messages;
+drop policy if exists "Signed-in users can announce they are online" on realtime.messages;
+
+create policy "Signed-in users can see who is online"
+  on realtime.messages for select
+  to authenticated
+  using (
+    realtime.topic() = 'online-users'
+    and realtime.messages.extension = 'presence'
+  );
+
+create policy "Signed-in users can announce they are online"
+  on realtime.messages for insert
+  to authenticated
+  with check (
+    realtime.topic() = 'online-users'
+    and realtime.messages.extension = 'presence'
+  );

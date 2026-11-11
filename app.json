@@ -13,7 +13,8 @@
       "bundleIdentifier": "com.ytcash.app",
       "infoPlist": {
         "NSCameraUsageDescription": "YTCash needs camera access to scan banknotes and QR codes.",
-        "NSPhotoLibraryUsageDescription": "YTCash needs photo library access to select images for scanning."
+        "NSPhotoLibraryUsageDescription": "YTCash needs photo library access to select images for scanning.",
+        "NSLocationWhenInUseUsageDescription": "YTCash uses your approximate location to show you on the Users Online map, only if you turn that on."
       }
     },
     "android": {
@@ -28,7 +29,12 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "CAMERA",
-        "READ_EXTERNAL_STORAGE"
+        "READ_EXTERNAL_STORAGE",
+        "ACCESS_COARSE_LOCATION"
+      ],
+      "blockedPermissions": [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION"
       ]
     },
     "web": {
@@ -47,6 +53,14 @@
         "expo-image-picker",
         {
           "photosPermission": "YTCash needs photo library access to select images for scanning."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "YTCash uses your approximate location to show you on the Users Online map, only if you turn that on.",
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false
         }
       ],
       [

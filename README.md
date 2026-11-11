@@ -10,6 +10,7 @@ A GCash-style digital wallet app for Filipinos with AI-powered multi-currency ca
 - **QR Payments** — Scan and generate QR codes for payments
 - **Multi-Currency** — Live exchange rates and automatic PHP conversion
 - **Secure Auth** — Email/password and phone OTP authentication via Supabase
+- **Users Online Map** — Live map of signed-in users, with opt-in approximate location
 
 ## Tech Stack
 
@@ -67,8 +68,10 @@ app/
   profile.tsx          User profile
   qr-scanner.tsx       QR code scanner
   add-money.tsx        Add funds via Stripe
+  online-map.tsx       Live map of users online
 contexts/
   auth.tsx             Authentication context & provider
+  presence.tsx         Who is online + location sharing choice
 services/
   supabase.ts          Database client & helpers
   currency-api.ts      Exchange rate fetching & conversion
@@ -79,6 +82,16 @@ constants/
 supabase/
   migration.sql        Database schema & RLS policies
 ```
+
+## Users Online Map
+
+Open it from the **Users Online** card on the Wallet screen.
+
+- **Who appears:** everyone signed in with the app open. Presence uses a private Supabase Realtime channel (`online-users`), so nothing is stored in the database and users drop off when they close the app or sign out.
+- **Location is opt-in:** a user gets a pin only after turning on "Show me on the map". Others are still counted as online, without a pin.
+- **What is shared:** first name and a location rounded to about 1 km. Email, phone and balance are never sent.
+- **Setup:** re-run `supabase/migration.sql` (section 8 adds the channel's access policies). The feature adds `expo-location` and `react-native-webview`, so rebuild dev builds with `npx expo run:android` / `npx expo run:ios`.
+- **Map tiles:** OpenStreetMap by default, no API key. For production traffic set `EXPO_PUBLIC_MAP_TILE_URL` to a hosted tile provider.
 
 ## Supported Currencies
 

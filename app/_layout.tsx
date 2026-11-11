@@ -7,6 +7,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '@/contexts/auth';
+import { PresenceProvider } from '@/contexts/presence';
 import { Brand, BitcoinColors } from '@/constants/theme';
 
 const BitcoinNavTheme = {
@@ -61,6 +62,7 @@ function AuthGate() {
       <Stack.Screen name="profile" options={{ headerShown: false }} />
       <Stack.Screen name="qr-scanner" options={{ headerShown: false, presentation: 'fullScreenModal' }} />
       <Stack.Screen name="add-money" options={{ headerShown: false }} />
+      <Stack.Screen name="online-map" options={{ headerShown: false }} />
     </Stack>
   );
 }
@@ -69,10 +71,12 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <ThemeProvider value={BitcoinNavTheme}>
-          <AuthGate />
-          <StatusBar style="light" />
-        </ThemeProvider>
+        <PresenceProvider>
+          <ThemeProvider value={BitcoinNavTheme}>
+            <AuthGate />
+            <StatusBar style="light" />
+          </ThemeProvider>
+        </PresenceProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

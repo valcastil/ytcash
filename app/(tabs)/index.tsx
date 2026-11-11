@@ -11,6 +11,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
+import { usePresence } from '@/contexts/presence';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import {
   CURRENCIES,
@@ -25,6 +26,7 @@ import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function HomeScreen() {
   const { user, profile, refreshProfile } = useAuth();
+  const { onlineUsers, status: presenceStatus } = usePresence();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [rates, setRates] = useState<ExchangeRates | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -237,6 +239,39 @@ export default function HomeScreen() {
             </TouchableOpacity>
           ))}
         </View>
+      </View>
+
+      {/* Users Online — opens the live map */}
+      <View style={styles.section}>
+        <TouchableOpacity
+          style={styles.onlineCard}
+          onPress={() => router.push('/online-map')}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="Open the map of users online">
+          <View style={styles.onlineIconWrap}>
+            <Ionicons name="earth" size={22} color={BitcoinColors.green} />
+          </View>
+          <View style={styles.onlineTextWrap}>
+            <Text style={styles.onlineTitle}>Users Online</Text>
+            <View style={styles.onlineSubRow}>
+              <View
+                style={[
+                  styles.onlineDot,
+                  presenceStatus !== 'online' && { backgroundColor: BitcoinColors.textMuted },
+                ]}
+              />
+              <Text style={styles.onlineSub}>
+                {presenceStatus === 'online'
+                  ? `${onlineUsers.length} online now · View map`
+                  : presenceStatus === 'connecting'
+                  ? 'Connecting…'
+                  : 'View map'}
+              </Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={BitcoinColors.textMuted} />
+        </TouchableOpacity>
       </View>
 
       {/* Bitcoin & Market Rates Spotlight */}
@@ -634,6 +669,52 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: BitcoinColors.textMuted,
     marginTop: 2,
+  },
+  onlineCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: BitcoinColors.cardBg,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    gap: 12,
+  },
+  onlineIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  onlineTextWrap: {
+    flex: 1,
+  },
+  onlineTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  onlineSubRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 3,
+    gap: 6,
+  },
+  onlineDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: BitcoinColors.green,
+  },
+  onlineSub: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: BitcoinColors.textSecondary,
   },
   liveIndicator: {
     flexDirection: 'row',
