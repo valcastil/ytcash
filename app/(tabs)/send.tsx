@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { formatCurrency, phpToSats } from '@/constants/currencies';
-import { supabase, createTransaction, updateBalance } from '@/services/supabase';
+import { findRecipient, sendMoney, walletErrorMessage, type Recipient } from '@/services/supabase';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function SendMoneyScreen() {
@@ -25,7 +25,7 @@ export default function SendMoneyScreen() {
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'input' | 'confirm'>('input');
-  const [recipientProfile, setRecipientProfile] = useState<any>(null);
+  const [recipientProfile, setRecipientProfile] = useState<Recipient | null>(null);
 
   const balance = profile?.balance ?? 0;
   const numAmount = parseFloat(amount) || 0;
@@ -41,14 +41,9 @@ export default function SendMoneyScreen() {
 
     setLoading(true);
     try {
-      const isEmail = recipient.includes('@');
-      const { data, error } = await supabase
-        .from('users')
-        .select('id, full_name, email, phone')
-        .eq(isEmail ? 'email' : 'phone', recipient.trim())
-        .single();
+      const data = await findRecipient(recipient);
 
-      if (error || !data) {
+      if (!data) {
         Alert.alert('Not Found', 'No user found with that email or phone number.');
         return;
       }
@@ -60,7 +55,7 @@ export default function SendMoneyScreen() {
       setRecipientProfile(data);
       setStep('confirm');
     } catch (err: any) {
-      Alert.alert('Error', err.message ?? 'Something went wrong');
+      Alert.alert('Error', walletErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -77,22 +72,11 @@ export default function SendMoneyScreen() {
       return;
     }
 
+    if (!recipientProfile) return;
+
     setLoading(true);
     try {
-      await createTransaction({
-        from_user: user!.id,
-        to_user: recipientProfile.id,
-        amount: amt,
-        currency: 'PHP',
-        converted_amount: amt,
-        converted_currency: 'PHP',
-        type: 'send',
-        status: 'completed',
-        note: note || null,
-      });
-
-      await updateBalance(user!.id, -amt);
-      await updateBalance(recipientProfile.id, amt);
+      await sendMoney(recipientProfile.id, amt, note || null);
       await refreshProfile();
 
       Alert.alert(
@@ -101,7 +85,7 @@ export default function SendMoneyScreen() {
         [{ text: 'Done', onPress: resetForm }],
       );
     } catch (err: any) {
-      Alert.alert('Transfer Failed', err.message ?? 'Something went wrong');
+      Alert.alert('Transfer Failed', walletErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -243,7 +227,7 @@ export default function SendMoneyScreen() {
                 <View style={styles.confirmInfo}>
                   <Text style={styles.confirmName}>{recipientProfile?.full_name ?? 'User'}</Text>
                   <Text style={styles.confirmDetail}>
-                    {recipientProfile?.email ?? recipientProfile?.phone}
+                    {recipient.trim()}
                   </Text>
                 </View>
               </View>

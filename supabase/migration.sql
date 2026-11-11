@@ -129,10 +129,11 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.users (id, email, full_name, avatar_url)
+  insert into public.users (id, email, phone, full_name, avatar_url)
   values (
     new.id,
     new.email,
+    nullif(new.phone, ''),
     coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', ''),
     coalesce(new.raw_user_meta_data->>'avatar_url', new.raw_user_meta_data->>'picture', null)
   )
@@ -629,3 +630,320 @@ begin
     alter publication supabase_realtime add table public.p2p_orders;
   end if;
 end $$;
+
+-- ============================================================
+-- 10. Wallet hardening
+-- Balances and the ledger can no longer be written from the app. Every
+-- balance change goes through a function below that acts only on the
+-- signed-in user (auth.uid()) and validates what it is asked to do.
+--
+-- IMPORTANT: ship this together with the app version that calls these
+-- functions. Older app builds that write balances directly stop working
+-- once this section is applied.
+-- ============================================================
+
+-- 10a. Close direct writes
+-- The old helper let any signed-in user add any amount to any account.
+revoke execute on function public.update_balance(uuid, numeric) from public, anon, authenticated;
+
+-- Profile rows: readable by their owner (RLS), but only the display name and
+-- avatar are editable. Balance, KYC status, email and phone are server-managed.
+revoke all on public.users from anon, authenticated;
+grant select on public.users to authenticated;
+grant update (full_name, avatar_url) on public.users to authenticated;
+
+-- Ledger and scan records are read-only to the app.
+revoke all on public.transactions from anon, authenticated;
+grant select on public.transactions to authenticated;
+revoke all on public.scanned_cash from anon, authenticated;
+grant select on public.scanned_cash to authenticated;
+
+-- 10b. Settings (server-side only; not readable from the app)
+create table if not exists public.wallet_settings (
+  id boolean primary key default true check (id),
+  -- Deposits are simulated: no card is charged. Keep this on for testing and
+  -- set it to false before real money is involved, until deposits are credited
+  -- by a verified payment (e.g. a Stripe webhook using the service role).
+  demo_deposits_enabled boolean not null default true,
+  deposit_max numeric(12,2) not null default 50000,
+  deposit_daily_limit numeric(12,2) not null default 100000,
+  scan_daily_limit numeric(12,2) not null default 100000,
+  send_max numeric(12,2) not null default 500000,
+  -- How far an app-supplied exchange rate may differ from the reference rate.
+  fx_tolerance numeric(4,2) not null default 0.25
+);
+insert into public.wallet_settings (id) values (true) on conflict (id) do nothing;
+alter table public.wallet_settings enable row level security;
+revoke all on public.wallet_settings from anon, authenticated;
+
+-- Banknotes the scanner may credit, with a reference PHP rate per unit.
+-- Update php_per_unit from time to time (or from a scheduled job).
+create table if not exists public.wallet_fx_reference (
+  currency text primary key,
+  php_per_unit numeric(12,4) not null check (php_per_unit > 0),
+  denominations numeric[] not null,
+  updated_at timestamptz not null default now()
+);
+insert into public.wallet_fx_reference (currency, php_per_unit, denominations) values
+  ('PHP', 1,     array[20, 50, 100, 200, 500, 1000]),
+  ('USD', 58,    array[1, 2, 5, 10, 20, 50, 100]),
+  ('EUR', 64,    array[5, 10, 20, 50, 100, 200, 500]),
+  ('AED', 15.8,  array[5, 10, 20, 50, 100, 200, 500, 1000])
+on conflict (currency) do nothing;
+alter table public.wallet_fx_reference enable row level security;
+revoke all on public.wallet_fx_reference from anon, authenticated;
+
+-- 10c. Profile creation without client-supplied balance, email or phone
+create or replace function public.ensure_profile()
+returns public.users
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_profile public.users;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+
+  insert into public.users (id, email, phone, full_name, avatar_url)
+  select
+    a.id,
+    a.email,
+    nullif(a.phone, ''),
+    coalesce(a.raw_user_meta_data->>'full_name', a.raw_user_meta_data->>'name', ''),
+    coalesce(a.raw_user_meta_data->>'avatar_url', a.raw_user_meta_data->>'picture', null)
+  from auth.users a
+  where a.id = v_uid
+  on conflict (id) do update
+    set email = excluded.email,
+        phone = coalesce(excluded.phone, users.phone);
+
+  select * into v_profile from public.users where id = v_uid;
+  return v_profile;
+end;
+$$;
+
+-- Fill in phone numbers for people who signed up by phone before profiles stored them.
+update public.users u
+  set phone = nullif(a.phone, '')
+  from auth.users a
+  where a.id = u.id and u.phone is null and nullif(a.phone, '') is not null;
+
+-- 10d. Send money
+-- Looks up a recipient by exact email or phone. Returns only id and name.
+create or replace function public.wallet_find_recipient(p_identifier text)
+returns table (id uuid, full_name text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select u.id, u.full_name
+  from public.users u
+  where auth.uid() is not null
+    and length(trim(coalesce(p_identifier, ''))) >= 5
+    and (
+      lower(u.email) = lower(trim(p_identifier))
+      -- Phone numbers match on digits only, so "+63 917..." and "63917..." are the same.
+      or (
+        length(regexp_replace(p_identifier, '\D', '', 'g')) >= 7
+        and regexp_replace(u.phone, '\D', '', 'g') = regexp_replace(p_identifier, '\D', '', 'g')
+      )
+    )
+  limit 1;
+$$;
+
+-- Moves money from the signed-in user to another user, atomically.
+create or replace function public.wallet_send(p_to uuid, p_amount numeric, p_note text default null)
+returns public.transactions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_amount numeric(12,2) := round(p_amount, 2);
+  v_max numeric;
+  v_tx public.transactions;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  select send_max into v_max from public.wallet_settings;
+  if v_amount is null or v_amount <= 0 or v_amount > v_max then
+    raise exception 'INVALID_AMOUNT';
+  end if;
+  if p_to is null or p_to = v_uid then
+    raise exception 'INVALID_RECIPIENT';
+  end if;
+
+  update public.users set balance = balance - v_amount
+    where id = v_uid and balance >= v_amount;
+  if not found then
+    raise exception 'INSUFFICIENT_BALANCE';
+  end if;
+
+  update public.users set balance = balance + v_amount where id = p_to;
+  if not found then
+    raise exception 'INVALID_RECIPIENT';
+  end if;
+
+  insert into public.transactions
+    (from_user, to_user, amount, currency, converted_amount, converted_currency, type, status, note)
+  values
+    (v_uid, p_to, v_amount, 'PHP', v_amount, 'PHP', 'send', 'completed',
+     nullif(left(trim(coalesce(p_note, '')), 200), ''))
+  returning * into v_tx;
+  return v_tx;
+end;
+$$;
+
+-- 10e. Deposit (simulated until a real payment confirmation credits the wallet)
+create or replace function public.wallet_deposit(p_amount numeric, p_method text default 'card')
+returns public.transactions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_amount numeric(12,2) := round(p_amount, 2);
+  v_settings public.wallet_settings;
+  v_today numeric;
+  v_tx public.transactions;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  select * into v_settings from public.wallet_settings;
+  if not v_settings.demo_deposits_enabled then
+    raise exception 'DEPOSITS_DISABLED';
+  end if;
+  if v_amount is null or v_amount <= 0 or v_amount > v_settings.deposit_max then
+    raise exception 'INVALID_AMOUNT';
+  end if;
+
+  -- Lock the wallet row so two deposits at once cannot both slip under the limit.
+  perform 1 from public.users where id = v_uid for update;
+  if not found then
+    raise exception 'PROFILE_MISSING';
+  end if;
+
+  select coalesce(sum(amount), 0) into v_today from public.transactions
+    where to_user = v_uid and type = 'add' and status = 'completed'
+      and created_at > now() - interval '24 hours';
+  if v_today + v_amount > v_settings.deposit_daily_limit then
+    raise exception 'DAILY_LIMIT_REACHED';
+  end if;
+
+  update public.users set balance = balance + v_amount where id = v_uid;
+
+  insert into public.transactions
+    (from_user, to_user, amount, currency, converted_amount, converted_currency, type, status, note)
+  values
+    (null, v_uid, v_amount, 'PHP', v_amount, 'PHP', 'add', 'completed',
+     'Deposit via ' || case when p_method = 'lightning' then 'Lightning Network' else 'Stripe Card' end)
+  returning * into v_tx;
+  return v_tx;
+end;
+$$;
+
+-- 10f. Cash scan
+-- p_notes: [{ "currency": "USD", "denomination": 20, "rate": 58.1 }, ...]
+-- The server only accepts real denominations and rates close to its reference,
+-- works out the PHP total itself, and enforces a daily limit.
+create or replace function public.wallet_add_scanned_cash(p_notes jsonb)
+returns public.transactions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_settings public.wallet_settings;
+  v_note jsonb;
+  v_currency text;
+  v_denomination numeric;
+  v_rate numeric;
+  v_ref public.wallet_fx_reference;
+  v_php numeric(12,2);
+  v_total numeric(12,2) := 0;
+  v_summary text := '';
+  v_today numeric;
+  v_tx public.transactions;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  if p_notes is null or jsonb_typeof(p_notes) <> 'array'
+     or jsonb_array_length(p_notes) = 0 or jsonb_array_length(p_notes) > 20 then
+    raise exception 'INVALID_SCAN';
+  end if;
+  select * into v_settings from public.wallet_settings;
+
+  perform 1 from public.users where id = v_uid for update;
+  if not found then
+    raise exception 'PROFILE_MISSING';
+  end if;
+
+  for v_note in select * from jsonb_array_elements(p_notes) loop
+    begin
+      v_currency := upper(v_note->>'currency');
+      v_denomination := (v_note->>'denomination')::numeric;
+      v_rate := (v_note->>'rate')::numeric;
+    exception when others then
+      raise exception 'INVALID_SCAN';
+    end;
+
+    select * into v_ref from public.wallet_fx_reference where currency = v_currency;
+    if not found or v_denomination is null or not (v_denomination = any (v_ref.denominations)) then
+      raise exception 'INVALID_SCAN';
+    end if;
+    if v_currency = 'PHP' then
+      v_rate := 1;
+    elsif v_rate is null
+       or abs(v_rate - v_ref.php_per_unit) > v_ref.php_per_unit * v_settings.fx_tolerance then
+      raise exception 'RATE_OUT_OF_RANGE';
+    end if;
+
+    v_php := round(v_denomination * v_rate, 2);
+    v_total := v_total + v_php;
+    v_summary := v_summary || case when v_summary = '' then '' else ', ' end
+      || v_currency || ' ' || trim(to_char(v_denomination, 'FM999990'));
+
+    insert into public.scanned_cash (user_id, currency, denomination, serial_number, php_equivalent, exchange_rate)
+    values (v_uid, v_currency, v_denomination, null, v_php, v_rate);
+  end loop;
+
+  select coalesce(sum(amount), 0) into v_today from public.transactions
+    where to_user = v_uid and type = 'scan' and status = 'completed'
+      and created_at > now() - interval '24 hours';
+  if v_today + v_total > v_settings.scan_daily_limit then
+    raise exception 'DAILY_LIMIT_REACHED';
+  end if;
+
+  update public.users set balance = balance + v_total where id = v_uid;
+
+  insert into public.transactions
+    (from_user, to_user, amount, currency, converted_amount, converted_currency, type, status, note)
+  values
+    (null, v_uid, v_total, 'PHP', v_total, 'PHP', 'scan', 'completed', left('Cash scan: ' || v_summary, 200))
+  returning * into v_tx;
+  return v_tx;
+end;
+$$;
+
+revoke execute on function public.ensure_profile() from public, anon;
+revoke execute on function public.wallet_find_recipient(text) from public, anon;
+revoke execute on function public.wallet_send(uuid, numeric, text) from public, anon;
+revoke execute on function public.wallet_deposit(numeric, text) from public, anon;
+revoke execute on function public.wallet_add_scanned_cash(jsonb) from public, anon;
+
+grant execute on function public.ensure_profile() to authenticated;
+grant execute on function public.wallet_find_recipient(text) to authenticated;
+grant execute on function public.wallet_send(uuid, numeric, text) to authenticated;
+grant execute on function public.wallet_deposit(numeric, text) to authenticated;
+grant execute on function public.wallet_add_scanned_cash(jsonb) to authenticated;

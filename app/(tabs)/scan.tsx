@@ -20,7 +20,7 @@ import {
   type DetectedNote,
 } from '@/services/cash-scanner';
 import { getPhpEquivalent } from '@/services/currency-api';
-import { recordScannedCash, updateBalance, createTransaction } from '@/services/supabase';
+import { addScannedCash, walletErrorMessage, type ScannedNoteInput } from '@/services/supabase';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 type ScanPhase = 'camera' | 'processing' | 'results';
@@ -31,7 +31,7 @@ export default function CashScannerScreen() {
   const cameraRef = useRef<CameraView>(null);
   const [phase, setPhase] = useState<ScanPhase>('camera');
   const [detectedNotes, setDetectedNotes] = useState<DetectedNote[]>([]);
-  const [totals, setTotals] = useState<Record<string, number>>({});
+  const [, setTotals] = useState<Record<string, number>>({});
   const [phpTotal, setPhpTotal] = useState(0);
   const [loading, setLoading] = useState(false);
 
@@ -105,40 +105,22 @@ export default function CashScannerScreen() {
     setLoading(true);
 
     try {
+      const notes: ScannedNoteInput[] = [];
       for (const note of detectedNotes) {
         if (note.currency === 'UNKNOWN' || note.denomination <= 0) continue;
-
-        const { phpAmount, rate } = await getPhpEquivalent(note.denomination, note.currency);
-
-        await recordScannedCash({
-          user_id: user.id,
-          currency: note.currency,
-          denomination: note.denomination,
-          serial_number: null,
-          php_equivalent: phpAmount,
-          exchange_rate: rate,
-        });
+        const { rate } = await getPhpEquivalent(note.denomination, note.currency);
+        notes.push({ currency: note.currency, denomination: note.denomination, rate });
       }
 
-      await updateBalance(user.id, phpTotal);
-
-      await createTransaction({
-        from_user: null,
-        to_user: user.id,
-        amount: phpTotal,
-        currency: 'PHP',
-        converted_amount: phpTotal,
-        converted_currency: 'PHP',
-        type: 'scan',
-        status: 'completed',
-        note: `Cash scan: ${Object.entries(totals).map(([c, a]) => `${CURRENCIES[c]?.symbol ?? c}${a}`).join(', ')}`,
-      });
+      // The server validates each note and works out the amount it credits.
+      const tx = await addScannedCash(notes);
+      const credited = tx?.amount ?? phpTotal;
 
       await refreshProfile();
 
       Alert.alert(
         'Cash Digitized to Wallet!',
-        `${formatCurrency(phpTotal)} (${phpToSats(phpTotal).toLocaleString()} sats) has been added to your balance.`,
+        `${formatCurrency(credited)} (${phpToSats(credited).toLocaleString()} sats) has been added to your balance.`,
         [{ text: 'OK', onPress: () => setPhase('camera') }],
       );
 
@@ -146,7 +128,7 @@ export default function CashScannerScreen() {
       setTotals({});
       setPhpTotal(0);
     } catch (err: any) {
-      Alert.alert('Error', err.message ?? 'Failed to add to wallet');
+      Alert.alert('Could Not Add Cash', walletErrorMessage(err));
     } finally {
       setLoading(false);
     }

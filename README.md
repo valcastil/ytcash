@@ -85,6 +85,23 @@ supabase/
   migration.sql        Database schema & RLS policies
 ```
 
+## Wallet Security
+
+Balances and the transaction ledger are read-only to the app. Every balance change goes through a database function that acts on the signed-in user only (section 10 of `supabase/migration.sql`):
+
+| Action | Function | Server-side checks |
+|--------|----------|--------------------|
+| Send | `wallet_send` | Positive amount, sufficient balance, debit and credit in one transaction |
+| Deposit | `wallet_deposit` | Per-deposit cap and 24-hour limit; can be switched off |
+| Cash scan | `wallet_add_scanned_cash` | Real denominations only, exchange rate near the reference rate, 24-hour limit |
+| P2P | `p2p_*` | Escrow, nearest-partner matching, release code |
+
+Limits live in the `wallet_settings` table and reference exchange rates in `wallet_fx_reference`; edit them in the Supabase table editor.
+
+**Deposits and cash scans are still simulated.** No card is charged and a scanned banknote is not collected, so both add balance without real money behind it, up to the limits above. Before handling real money, set `wallet_settings.demo_deposits_enabled` to `false` and credit deposits from a verified payment (for example a Stripe webhook using the service role).
+
+Apply the migration together with this app version: older builds that wrote balances directly stop working once section 10 is in place.
+
 ## P2P Cash Delivery
 
 Open it from the **P2P Cash Delivery** card on the Wallet screen. It works like an escrowed P2P trade:

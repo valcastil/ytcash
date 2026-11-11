@@ -14,11 +14,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '@/contexts/auth';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { formatCurrency, phpToSats } from '@/constants/currencies';
-import { createTransaction, updateBalance } from '@/services/supabase';
+import { depositFunds, walletErrorMessage } from '@/services/supabase';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function AddMoneyScreen() {
-  const { user, profile, refreshProfile } = useAuth();
+  const { profile, refreshProfile } = useAuth();
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
   const [selectedMethod, setSelectedMethod] = useState<'card' | 'lightning'>('card');
@@ -36,18 +36,7 @@ export default function AddMoneyScreen() {
 
     setLoading(true);
     try {
-      await updateBalance(user!.id, amt);
-      await createTransaction({
-        from_user: null,
-        to_user: user!.id,
-        amount: amt,
-        currency: 'PHP',
-        converted_amount: amt,
-        converted_currency: 'PHP',
-        type: 'add',
-        status: 'completed',
-        note: `Deposit via ${selectedMethod === 'card' ? 'Stripe Card' : 'Lightning Network'}`,
-      });
+      await depositFunds(amt, selectedMethod);
       await refreshProfile();
 
       Alert.alert(
@@ -56,7 +45,7 @@ export default function AddMoneyScreen() {
         [{ text: 'OK', onPress: () => router.back() }],
       );
     } catch (err: any) {
-      Alert.alert('Error', err.message ?? 'Failed to add money. Please try again.');
+      Alert.alert('Deposit Failed', walletErrorMessage(err));
     } finally {
       setLoading(false);
     }

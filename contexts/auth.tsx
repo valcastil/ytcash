@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
 import { Session, User } from '@supabase/supabase-js';
-import { supabase, getProfile, upsertProfile, type UserProfile } from '@/services/supabase';
+import { supabase, getProfile, ensureProfile, type UserProfile } from '@/services/supabase';
 
 // Warm up and complete browser auth session if redirected
 WebBrowser.maybeCompleteAuthSession();
@@ -208,17 +208,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // If profile does not exist yet (e.g. newly signed up via Google or database trigger was not executed)
       if (!p) {
         try {
-          p = await upsertProfile({
-            id: u.id,
-            email: u.email ?? null,
-            full_name: fallbackName,
-            avatar_url: fallbackAvatar,
-            balance: 0,
-            kyc_verified: false,
-          });
-        } catch (upsertErr: any) {
-          if (upsertErr?.code !== 'PGRST205') {
-            console.warn('Profile auto-creation warning:', upsertErr);
+          p = await ensureProfile();
+        } catch (ensureErr: any) {
+          if (ensureErr?.code !== 'PGRST205' && ensureErr?.code !== 'PGRST202') {
+            console.warn('Profile auto-creation warning:', ensureErr);
           }
         }
       }
@@ -241,14 +234,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       options: { data: { full_name: fullName } },
     });
     if (error) throw error;
-    if (data.user) {
-      await upsertProfile({
-        id: data.user.id,
-        email,
-        full_name: fullName,
-        balance: 0,
-        kyc_verified: false,
-      });
+    // The profile row is created server-side from the auth record (database trigger).
+    // If this sign-up already has a session, make sure it exists; otherwise it is
+    // created on first sign-in.
+    if (data.session) {
+      await ensureProfile().catch((e) => console.warn('Profile creation warning:', e));
     }
     setLoading(false);
   }
