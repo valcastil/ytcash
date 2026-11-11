@@ -99,11 +99,12 @@ create index if not exists idx_scanned_cash_serial
   on public.scanned_cash(serial_number)
   where serial_number is not null;
 
--- 4. RPC: Atomic balance update (prevents race conditions)
+-- 4. RPC: Atomic balance update (internal/admin only; revoked from app roles in 10a)
 create or replace function public.update_balance(user_id uuid, delta numeric)
 returns void
 language plpgsql
 security definer
+set search_path = public
 as $$
 begin
   update public.users
@@ -344,6 +345,7 @@ declare
 begin
   update public.users set balance = balance + p_order.amount where id = p_order.sender_id;
   update public.transactions set status = 'failed' where id = p_order.transaction_id;
+  delete from public.p2p_order_codes where order_id = p_order.id;
   update public.p2p_orders
     set status = 'cancelled', cancel_reason = p_reason, cancelled_at = now()
     where id = p_order.id
@@ -366,6 +368,7 @@ begin
   update public.transactions
     set status = 'completed', to_user = p_order.partner_id
     where id = p_order.transaction_id;
+  delete from public.p2p_order_codes where order_id = p_order.id;
   update public.p2p_orders
     set status = 'completed', completed_at = now()
     where id = p_order.id
@@ -779,6 +782,9 @@ begin
   if p_to is null or p_to = v_uid then
     raise exception 'INVALID_RECIPIENT';
   end if;
+
+  -- Lock sender and recipient rows in deterministic UUID order to prevent deadlocks
+  perform 1 from public.users where id in (v_uid, p_to) order by id for update;
 
   update public.users set balance = balance - v_amount
     where id = v_uid and balance >= v_amount;

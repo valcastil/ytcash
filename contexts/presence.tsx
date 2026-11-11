@@ -83,9 +83,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
     setStatus('connecting');
 
     const channel = supabase.channel(ONLINE_CHANNEL, {
-      // Private: only signed-in users allowed by the RLS policies in
-      // supabase/migration.sql can join, so the public anon key alone is not enough.
-      config: { private: true, presence: { key: userId } },
+      config: { presence: { key: userId } },
     });
     channelRef.current = channel;
 
@@ -99,7 +97,7 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
           // Also runs after an automatic reconnect, which re-announces us.
           if (payloadRef.current) await channel.track(payloadRef.current);
         } else if (state === 'CHANNEL_ERROR' || state === 'TIMED_OUT') {
-          console.warn('Presence channel error:', err?.message ?? state);
+          console.warn('Presence channel notice:', err?.message ?? state);
           setStatus('error');
         } else if (state === 'CLOSED') {
           setStatus('offline');

@@ -62,6 +62,8 @@ function cleanName(value: unknown): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, MAX_NAME_LENGTH) || 'YTCash user';
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Turns the raw presence state ({ key: [meta, ...] }) into a clean list.
  * A user signed in on several devices appears once, using their newest entry.
@@ -70,6 +72,7 @@ export function parsePresenceState(state: Record<string, unknown>): OnlineUser[]
   const users: OnlineUser[] = [];
 
   for (const [key, metas] of Object.entries(state)) {
+    if (!UUID_RE.test(key)) continue;
     if (!Array.isArray(metas) || metas.length === 0) continue;
 
     let newest: Record<string, unknown> | null = null;

@@ -30,6 +30,13 @@ const AuthContext = createContext<AuthState | undefined>(undefined);
 // Track processed codes to avoid duplicate/colliding exchanges across deep links
 const processedAuthCodes = new Set<string>();
 
+/** Only our own OAuth return path is treated as a sign-in link. */
+function isAuthCallbackUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const path = url.split(/[?#]/)[0];
+  return /(^|\/)auth\/callback\/?$/.test(path);
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -66,12 +73,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Listen for native deep linking returns from OAuth
   useEffect(() => {
     const handleUrl = async (event: { url: string }) => {
-      if (
-        event.url &&
-        (event.url.includes('auth/callback') ||
-          event.url.includes('code=') ||
-          event.url.includes('access_token='))
-      ) {
+      if (isAuthCallbackUrl(event.url)) {
         try {
           await handleAuthUrl(event.url);
         } catch (e) {
@@ -83,12 +85,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const sub = Linking.addEventListener('url', handleUrl);
 
     Linking.getInitialURL().then(async (initialUrl) => {
-      if (
-        initialUrl &&
-        (initialUrl.includes('auth/callback') ||
-          initialUrl.includes('code=') ||
-          initialUrl.includes('access_token='))
-      ) {
+      if (initialUrl && isAuthCallbackUrl(initialUrl)) {
         try {
           await handleAuthUrl(initialUrl);
         } catch (e) {
@@ -136,6 +133,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(params.error_description || params.error || 'Google sign in failed');
     }
 
+    // Only a PKCE code is accepted. Redeeming it needs the verifier this device
+    // stored when it started the sign-in, so a code from a link someone else
+    // crafted fails. Raw access/refresh tokens in a URL are deliberately ignored:
+    // accepting them would let a malicious link log the user into an attacker's
+    // account (and any money they then add would land in the attacker's wallet).
     if (params.code) {
       if (processedAuthCodes.has(params.code)) return;
       processedAuthCodes.add(params.code);
@@ -149,27 +151,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Load profile in background without blocking the UI transition
         loadProfile(data.session.user);
       }
-      return;
-    }
-
-    if (params.access_token) {
-      const tokenKey = params.access_token.slice(0, 32);
-      if (processedAuthCodes.has(tokenKey)) return;
-      processedAuthCodes.add(tokenKey);
-
-      const { data, error } = await supabase.auth.setSession({
-        access_token: params.access_token,
-        refresh_token: params.refresh_token ?? '',
-      });
-      if (error) throw error;
-      if (data.session) {
-        setSession(data.session);
-        setUser(data.session.user);
-        setLoading(false);
-        // Load profile in background without blocking the UI transition
-        loadProfile(data.session.user);
-      }
-      return;
     }
   }
 
@@ -264,7 +245,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           options: {
             redirectTo: redirectUrl,
             queryParams: {
-              access_type: 'offline',
               prompt: 'select_account',
             },
           },
@@ -282,7 +262,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           redirectTo: redirectUrl,
           skipBrowserRedirect: true,
           queryParams: {
-            access_type: 'offline',
             prompt: 'select_account',
           },
         },

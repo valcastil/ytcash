@@ -18,6 +18,17 @@ import { formatCurrency, phpToSats } from '@/constants/currencies';
 import { findRecipient, sendMoney, walletErrorMessage, type Recipient } from '@/services/supabase';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
+// Test accounts from supabase/seed_sample_users.sql. Development builds only:
+// never ship test identities (or hints about who has an account) to real users.
+const SAMPLE_CONTACTS = __DEV__
+  ? [
+      { name: 'Maria Santos', identifier: 'maria.santos@gmail.com' },
+      { name: 'Juan Dela Cruz', identifier: '09185551234' },
+      { name: 'Carlos Mendoza', identifier: 'carlos.mendoza@gmail.com' },
+      { name: 'Satoshi Nakamoto', identifier: 'satoshi@bitcoin.org' },
+    ]
+  : [];
+
 export default function SendMoneyScreen() {
   const { user, profile, refreshProfile } = useAuth();
   const [recipient, setRecipient] = useState('');
@@ -133,6 +144,38 @@ export default function SendMoneyScreen() {
                 keyboardType="email-address"
               />
             </View>
+
+            {/* Quick Sample Contacts (development builds only) */}
+            {SAMPLE_CONTACTS.length > 0 && (
+            <View style={styles.sampleContactsRow}>
+              <Text style={styles.sampleContactsLabel}>Suggested Users:</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sampleContactsScroll}>
+                {SAMPLE_CONTACTS.map((c) => (
+                  <TouchableOpacity
+                    key={c.identifier}
+                    style={[
+                      styles.sampleChip,
+                      recipient.toLowerCase() === c.identifier.toLowerCase() && styles.sampleChipActive,
+                    ]}
+                    onPress={() => setRecipient(c.identifier)}>
+                    <Ionicons
+                      name="person-circle-outline"
+                      size={14}
+                      color={recipient.toLowerCase() === c.identifier.toLowerCase() ? BitcoinColors.orange : BitcoinColors.textMuted}
+                      style={{ marginRight: 4 }}
+                    />
+                    <Text
+                      style={[
+                        styles.sampleChipText,
+                        recipient.toLowerCase() === c.identifier.toLowerCase() && styles.sampleChipTextActive,
+                      ]}>
+                      {c.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+            )}
 
             {/* Amount Input */}
             <Text style={[styles.label, { marginTop: 18 }]}>AMOUNT TO SEND (PHP)</Text>
@@ -373,6 +416,45 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+  sampleContactsRow: {
+    marginTop: 10,
+    marginBottom: 2,
+  },
+  sampleContactsLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: BitcoinColors.textMuted,
+    marginBottom: 6,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  sampleContactsScroll: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  sampleChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: BitcoinColors.cardElevated,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+  },
+  sampleChipActive: {
+    backgroundColor: 'rgba(247, 147, 26, 0.15)',
+    borderColor: BitcoinColors.orange,
+  },
+  sampleChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: BitcoinColors.textSecondary,
+  },
+  sampleChipTextActive: {
+    color: BitcoinColors.orange,
+    fontWeight: '700',
   },
   inputSingle: {
     backgroundColor: BitcoinColors.cardElevated,
