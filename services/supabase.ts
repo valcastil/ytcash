@@ -11,6 +11,10 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
+    // PKCE: an OAuth redirect carries a one-time code that only this device can
+    // redeem (it holds the matching verifier). Tokens never travel in a URL, so a
+    // crafted ytcash:// link cannot sign the user into someone else's account.
+    flowType: 'pkce',
   },
 });
 
@@ -166,8 +170,11 @@ export async function addScannedCash(notes: ScannedNoteInput[]) {
   return firstRow<Transaction>(data);
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ─── Transaction helpers ────────────────────────────────
 export async function getTransactions(userId: string, limit = 20) {
+  if (!UUID_RE.test(userId)) return [];
   try {
     const { data, error } = await supabase
       .from('transactions')

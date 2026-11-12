@@ -153,9 +153,12 @@ export async function createP2POrderFromQuote(input: QuoteOrderInput): Promise<P
   return toOrder(single(data));
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function listP2POrders(
   userId: string,
 ): Promise<{ sent: P2POrder[]; assigned: P2POrder[] }> {
+  if (!UUID_RE.test(userId)) return { sent: [], assigned: [] };
   const { data, error } = await supabase
     .from('p2p_orders')
     .select(ORDER_COLUMNS)
