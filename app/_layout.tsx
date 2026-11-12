@@ -8,6 +8,7 @@ import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '@/contexts/auth';
 import { PresenceProvider } from '@/contexts/presence';
+import { AppLock } from '@/components/app-lock';
 import { Brand, BitcoinColors } from '@/constants/theme';
 
 const BitcoinNavTheme = {
@@ -66,6 +67,15 @@ function AuthGate() {
       <Stack.Screen name="p2p/index" options={{ headerShown: false }} />
       <Stack.Screen name="p2p/new" options={{ headerShown: false }} />
       <Stack.Screen name="p2p/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="kyc/index" options={{ headerShown: false }} />
+      <Stack.Screen name="kyc/manual" options={{ headerShown: false }} />
+      <Stack.Screen name="kyc/review/index" options={{ headerShown: false }} />
+      <Stack.Screen name="kyc/review/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="withdraw/index" options={{ headerShown: false }} />
+      <Stack.Screen name="withdraw/review" options={{ headerShown: false }} />
+      <Stack.Screen name="direct/index" options={{ headerShown: false }} />
+      <Stack.Screen name="direct/new" options={{ headerShown: false }} />
+      <Stack.Screen name="direct/[id]" options={{ headerShown: false }} />
     </Stack>
   );
 }
@@ -76,7 +86,9 @@ export default function RootLayout() {
       <AuthProvider>
         <PresenceProvider>
           <ThemeProvider value={BitcoinNavTheme}>
-            <AuthGate />
+            <AppLock>
+              <AuthGate />
+            </AppLock>
             <StatusBar style="light" />
           </ThemeProvider>
         </PresenceProvider>

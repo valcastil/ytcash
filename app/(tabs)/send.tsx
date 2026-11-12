@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { formatCurrency, phpToSats } from '@/constants/currencies';
+import { confirmWithBiometrics } from '@/services/biometrics';
 import { findRecipient, sendMoney, walletErrorMessage, type Recipient } from '@/services/supabase';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
@@ -84,6 +85,7 @@ export default function SendMoneyScreen() {
     }
 
     if (!recipientProfile) return;
+    if (!(await confirmWithBiometrics(user?.id, `Confirm sending ${formatCurrency(amt)}`))) return;
 
     setLoading(true);
     try {

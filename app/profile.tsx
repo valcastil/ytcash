@@ -39,12 +39,12 @@ export default function ProfileScreen() {
   }
 
   const menuItems = [
-    { icon: 'shield-checkmark-outline' as const, label: 'Wallet Verification', badge: profile?.kyc_verified ? 'Verified' : 'Pending', onPress: () => {} },
+    { icon: 'shield-checkmark-outline' as const, label: 'Identity Verification', badge: profile?.kyc_verified ? 'Verified' : 'Not verified', onPress: () => router.push('/kyc') },
     { icon: 'key-outline' as const, label: 'Backup & Recovery Key', badge: 'Active', onPress: () => {} },
     { icon: 'flash-outline' as const, label: 'Lightning Channels', badge: 'Connected', onPress: () => {} },
-    { icon: 'card-outline' as const, label: 'Linked Payment Methods', onPress: () => {} },
+    { icon: 'card-outline' as const, label: 'Withdraw to Bank or GCash', onPress: () => router.push('/withdraw') },
     { icon: 'notifications-outline' as const, label: 'Ledger Notifications', onPress: () => {} },
-    { icon: 'lock-closed-outline' as const, label: 'Security & Biometrics', onPress: () => {} },
+    { icon: 'lock-closed-outline' as const, label: 'Security & Biometrics', onPress: () => router.push('/kyc') },
     { icon: 'help-circle-outline' as const, label: 'Help & Support', onPress: () => {} },
     { icon: 'document-text-outline' as const, label: 'Legal & Privacy', onPress: () => {} },
   ];

@@ -19,13 +19,14 @@ export interface AddressMatch {
   lng: number;
 }
 
-export async function searchAddress(query: string): Promise<AddressMatch[]> {
+/** `countries` is a comma-separated list of ISO country codes; defaults to EXPO_PUBLIC_P2P_COUNTRY. */
+export async function searchAddress(query: string, countries: string = GEOCODER_COUNTRIES): Promise<AddressMatch[]> {
   const q = query.trim();
   if (q.length < 5) return [];
 
   const url =
     `${GEOCODER_URL}?format=jsonv2&limit=5&addressdetails=0` +
-    `&countrycodes=${encodeURIComponent(GEOCODER_COUNTRIES)}&q=${encodeURIComponent(q)}`;
+    `&countrycodes=${encodeURIComponent(countries)}&q=${encodeURIComponent(q)}`;
 
   const headers: Record<string, string> = { Accept: 'application/json', 'Accept-Language': 'en' };
   // Nominatim asks apps to identify themselves; browsers do this with the Referer instead.

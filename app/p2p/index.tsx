@@ -240,6 +240,15 @@ export default function P2PHubScreen() {
                 </TouchableOpacity>
               </View>
             )}
+            <TouchableOpacity
+              style={styles.withdrawRow}
+              onPress={() => router.push('/withdraw')}
+              activeOpacity={0.8}
+              accessibilityRole="button">
+              <Ionicons name="wallet-outline" size={16} color={BitcoinColors.orange} />
+              <Text style={styles.withdrawText}>Withdraw earnings to GCash, Maya or bank</Text>
+              <Ionicons name="chevron-forward" size={16} color={BitcoinColors.textMuted} />
+            </TouchableOpacity>
           </View>
         )}
 
@@ -399,6 +408,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
     color: BitcoinColors.orange,
+  },
+  withdrawRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: BitcoinColors.border,
+  },
+  withdrawText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   sectionTitle: {
     fontSize: 12,

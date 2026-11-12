@@ -10,6 +10,11 @@ A GCash-style digital wallet app for Filipinos with AI-powered multi-currency ca
 - **QR Payments** — Scan and generate QR codes for payments
 - **Multi-Currency** — Live exchange rates and automatic PHP conversion
 - **Secure Auth** — Email/password and phone OTP authentication via Supabase
+- **Identity Verification (KYC)** — ID scan, face match and liveness through Didit, with manual review as a fallback
+- **Fingerprint / Face ID Lock** — Unlocks the app and confirms sending or receiving money
+- **Send from Abroad** — Pay in AED, USD or EUR at a rate and fee held for 10 minutes
+- **Withdrawals** — Cash out wallet balance to GCash, Maya or a bank, paid out by a reviewer
+- **Direct Pay** — Cash delivery in the Philippines, India or Mexico: find the nearest partner on a map and pay them yourself after an OTP hand-over
 - **P2P Cash Delivery** — Send cash to anyone in the Philippines through the closest cash partner, with escrow
 - **Users Online Map** — Live map of signed-in users, with opt-in approximate location
 
@@ -71,6 +76,9 @@ app/
   add-money.tsx        Add funds via Stripe
   online-map.tsx       Live map of users online
   p2p/                 P2P cash delivery (hub, new order, order detail)
+  kyc/                 Identity verification, manual submission, admin review
+  withdraw/            Withdrawal request and payout review
+  direct/              Direct Pay (hub, partner map, order with chat)
 contexts/
   auth.tsx             Authentication context & provider
   presence.tsx         Who is online + location sharing choice
@@ -84,6 +92,134 @@ constants/
 supabase/
   migration.sql        Database schema & RLS policies
 ```
+
+## Identity Verification (KYC)
+
+Open it from **Account → Identity Verification**. A user becomes verified in one of two ways, and only the server can set the verified flag:
+
+- **Didit (automatic):** government ID scan, face match against the ID, and a liveness check, run by [Didit](https://didit.me)'s SDK inside the app.
+- **Manual review (fallback):** the user photographs their ID (front and back) and takes a selfie; you approve or reject it under **Review submissions**.
+
+The app always asks the server which one to use. The server picks Didit when it is set up and working, and answers "manual" when Didit is not configured yet, has run out of checks, rate-limits, or is unreachable. So the app works today with manual review only, and starts using Didit as soon as the secrets below are set.
+
+### Setup
+
+1. Re-run `supabase/migration.sql` (section 11).
+2. Make yourself a reviewer, in the Supabase SQL editor:
+   ```sql
+   insert into public.kyc_admins (user_id)
+   select id from public.users where email = 'you@example.com';
+   ```
+3. Deploy the two Edge Functions:
+   ```bash
+   supabase functions deploy kyc
+   supabase functions deploy kyc-webhook --no-verify-jwt
+   ```
+   `kyc-webhook` is called by Didit, which cannot send a Supabase login, so it checks Didit's signature on every request instead.
+
+### Connecting Didit (test mode)
+
+1. In the Didit console, create an application in **sandbox / test mode** and a KYC workflow with ID Verification, Face Match and Liveness.
+2. Set the webhook URL to `https://<your-project>.supabase.co/functions/v1/kyc-webhook`.
+3. Store the keys as Edge Function secrets. They stay on the server and are never in the app:
+   ```bash
+   supabase secrets set DIDIT_API_KEY=... DIDIT_WORKFLOW_ID=... DIDIT_WEBHOOK_SECRET=... DIDIT_MODE=test
+   ```
+   Optional in test mode: `DIDIT_SANDBOX_SCENARIO=approve` (or another scenario from Didit's sandbox catalog) forces a known result.
+
+Test-mode results are simulated. They are stored with `is_test = true` and shown with a "TEST MODE" label, and they do mark the user verified so the whole flow can be tried.
+
+### Going live
+
+1. Create a live application in Didit and replace the three secrets with its values, plus `DIDIT_MODE=live`.
+2. Run `select public.kyc_clear_test_verifications();` so nobody stays verified from a simulated result.
+
+### Settings
+
+Edit the single row in `kyc_settings`:
+
+| Column | Meaning |
+|--------|---------|
+| `provider_mode` | `auto` (Didit, falling back to manual), `manual` (manual only, e.g. when the free Didit checks are used up), `didit` (no fallback) |
+| `didit_sessions_per_day` | Didit sessions one user may start per 24 hours (default 3), to protect your quota |
+| `required_for` | Features that need a verified identity: any of `p2p`, `send`. Empty by default, so KYC is optional until you turn it on, e.g. `update kyc_settings set required_for = '{p2p,send}';` |
+
+To withdraw a verification later: `select public.kyc_revoke('<user id>', 'reason');` as a reviewer.
+
+### Fingerprint / Face ID lock
+
+Phones never give an app the fingerprint itself; the operating system checks it and answers yes or no. YTCash uses that check to:
+
+- unlock the app when it is opened, or reopened after 30 seconds in the background
+- confirm sending money (Send, P2P delivery, releasing escrow)
+- confirm receiving money (Add Money, Scan Cash, a P2P partner collecting a payout)
+
+It is on by default when the phone has a fingerprint or face set up, falls back to the phone passcode, and can be turned off under Identity Verification. Money sent to a user by someone else arrives without any action, so there is nothing to confirm for that.
+
+### Stored documents
+
+ID photos and selfies for manual review go to the private `kyc-documents` storage bucket. Users can add files to their own folder only and cannot read them back; only reviewers can view them, through links that expire after 5 minutes. Decide how long you keep them and delete older files from the Supabase dashboard.
+
+Server tests: `deno test supabase/functions/_tests`.
+
+## Direct Pay (Philippines, India, Mexico)
+
+A separate way to send cash where **no money passes through YTCash**. Open it from the **Direct Pay** card on the Wallet screen.
+
+1. The sender, who can be anywhere, chooses where the cash is delivered, then enters the amount and their friend's address:
+
+   | Deliver in | Cash and payment in | Partner is paid by | Per delivery |
+   |------------|--------------------|--------------------|--------------|
+   | Philippines | PHP | GCash, GoTyme, Maya | ₱100 to ₱50,000 |
+   | India | INR | UPI | ₹100 to ₹50,000 |
+   | Mexico | MXN | SPEI (CLABE), Mercado Pago | MX$50 to MX$15,000 |
+ The app shows the friend and up to 5 available partners within 30 km on a map, nearest first.
+2. The sender says how the cash should be handed over, **at the receiver's address** or **at a public place** (optionally suggesting one), picks a partner and one of the payment apps that partner accepts, and sends a request. Both can chat in the app.
+3. The partner replies with an **offer**: a risk level, which sets their commission, and where the hand-over happens (they can switch to a meet-up and name the place).
+
+   | Risk level | Commission (share of the cash amount) |
+   |------------|----------------------------------------|
+   | Low | 5% |
+   | Medium | 10% |
+   | High | 20% |
+
+4. The sender sees the commission and the total to pay and **approves** (or cancels). Nothing goes ahead before that, and the commission cannot change afterwards.
+5. The partner brings their own cash to the address or meeting place. The sender passes a 6-digit OTP to the friend, who gives it to the partner after counting the cash.
+6. Entering the OTP reveals the partner's account number to the sender, who pays the cash amount **plus the commission** from their own payment app and enters the reference number.
+7. The partner checks their app and confirms. If no payment arrives, they can report it after 30 minutes.
+
+The commission goes to the partner in full, paid by the sender on top of the cash amount; YTCash takes nothing. The rates are fixed in `direct_risk_rate()` in the migration.
+
+The cash and the payment are always in the delivery country's currency, so Direct Pay never converts money, and the sender needs a way to pay that country's app (for example their own GCash to pay a Philippine partner). Only partners who accept an app for that country are shown. Delivery inside the UAE is not offered.
+
+There is **no integration with GCash, GoTyme, Maya, UPI, SPEI or Mercado Pago**: YTCash cannot see or verify the transfer. Both sides confirm by hand.
+
+**The partner carries the risk.** They hand over cash before being paid. What the app does about it: the account to pay is fixed when the partner accepts; a sender with a delivery awaiting payment cannot start another; a reported sender is blocked until they pay and the partner confirms; a reviewer can settle a report with `select public.direct_resolve_dispute('<order id>', 'completed' | 'unpaid', 'note');`. Requiring KYC for P2P (`kyc_settings.required_for`) also applies here.
+
+**Becoming a Direct Pay partner:** turn on "Deliver cash near me" in P2P Cash Delivery, then add the payment account for your country (GCash, GoTyme or Maya; a UPI ID; a CLABE or Mercado Pago number) under Direct Pay → Deliver cash. Listed partners' first name and area (rounded to about 1 km) are visible to senders searching nearby; account numbers are not, until a delivery is confirmed.
+
+**Map:** set `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` (Maps JavaScript API) to use Google Maps. Without a key, or if Google rejects it, the same map is drawn with OpenStreetMap. Partners get an "Open in Google Maps" button for directions either way.
+
+## Sending from Abroad (quotes)
+
+On **P2P Cash Delivery → New cash delivery**, choose what to pay in: AED, USD, EUR, or the PHP wallet. For a foreign currency, type either what you pay or what the receiver should get; the other side, the exchange rate and the fee are worked out on the server and held for 10 minutes.
+
+- **Rate:** the market rate less a margin (default 1%).
+- **Fee:** 1.5% of the amount converted, minimum ₱50, included in "You pay".
+- **Change pricing:** edit the single row in `fx_settings` (`margin`, `fee_pct`, `min_fee_php`, `quote_ttl_seconds`).
+- **Market rates:** deploy `supabase functions deploy fx-rates`. The app calls it before quoting and it refreshes the stored rates at most every 10 minutes. Without it, quotes use the rates stored in `wallet_fx_reference` and stop after 7 days without an update.
+
+**The foreign-currency payment is simulated.** No card is charged: confirming a quote credits the converted pesos and puts them straight into escrow, under the same switch (`wallet_settings.demo_deposits_enabled`) and daily limit as Add Money. `p2p_create_order_from_quote` is the function that must wait for a real payment confirmation once a payment provider is connected. Refunds of a cancelled order go to the sender's PHP wallet.
+
+## Withdrawals
+
+**Account → Withdraw to Bank or GCash** (also linked from the P2P Deliver tab). The user enters an amount (₱100 to ₱50,000) and a GCash, Maya or bank account. The amount leaves the wallet immediately and is held.
+
+Reviewers (the people in `kyc_admins`) see **Pay out withdrawals** on the same screen. Send the money yourself, then tap **Mark paid** and enter the transfer reference, which the user sees as proof. **Reject** needs a reason and returns the money to the wallet. A user can cancel while the request is still waiting.
+
+- Withdrawals require a verified identity by default (`wallet_settings.withdrawals_require_kyc`).
+- Limits and fee: `withdraw_min`, `withdraw_max`, `withdraw_daily_limit`, `withdraw_fee` (flat, default 0) in `wallet_settings`; `withdrawals_enabled` switches the feature off.
+- **Do not pay out real money while deposits are simulated.** Wallet balances can still be created by Add Money, Scan Cash and quote payments without any real funds, so a payout would be real money for an invented balance.
 
 ## Wallet Security
 

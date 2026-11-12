@@ -12,9 +12,10 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.ytcash.app",
       "infoPlist": {
-        "NSCameraUsageDescription": "YTCash needs camera access to scan banknotes and QR codes.",
+        "NSCameraUsageDescription": "YTCash needs camera access to scan banknotes, QR codes and your ID, and to take a selfie for identity verification.",
         "NSPhotoLibraryUsageDescription": "YTCash needs photo library access to select images for scanning.",
-        "NSLocationWhenInUseUsageDescription": "YTCash uses your approximate location to show you on the Users Online map, only if you turn that on."
+        "NSLocationWhenInUseUsageDescription": "YTCash uses your approximate location to show you on the Users Online map, only if you turn that on.",
+        "NSFaceIDUsageDescription": "YTCash uses Face ID to confirm it is you before money leaves your wallet."
       }
     },
     "android": {
@@ -46,13 +47,14 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "YTCash needs camera access to scan banknotes and QR codes."
+          "cameraPermission": "YTCash needs camera access to scan banknotes, QR codes and your ID, and to take a selfie for identity verification."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "YTCash needs photo library access to select images for scanning."
+          "photosPermission": "YTCash needs photo library access to select images for scanning.",
+          "cameraPermission": "YTCash needs camera access to scan banknotes, QR codes and your ID, and to take a selfie for identity verification."
         }
       ],
       [
@@ -73,6 +75,19 @@
           "dark": {
             "backgroundColor": "#E8850D"
           }
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "YTCash uses Face ID to confirm it is you before money leaves your wallet."
+        }
+      ],
+      [
+        "@didit-protocol/sdk-react-native",
+        {
+          "iosVariant": "core",
+          "androidVariant": "core"
         }
       ]
     ],

@@ -21,6 +21,7 @@ import { ScreenHeader } from '@/components/screen-header';
 import { formatCurrency } from '@/constants/currencies';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth';
+import { confirmWithBiometrics } from '@/services/biometrics';
 import {
   acceptP2POrder,
   cancelP2POrder,
@@ -139,6 +140,7 @@ export default function P2POrderScreen() {
       return;
     }
     setCodeError(null);
+    if (!(await confirmWithBiometrics(userId, `Confirm receiving ${amountText}`))) return;
     await run(async () => {
       const result = await completeP2POrder(order.id, code);
       if (!result.ok) {
@@ -235,6 +237,14 @@ export default function P2POrderScreen() {
             <DetailRow icon="person-outline" value={order.receiver_name} />
             <DetailRow icon="call-outline" value={order.receiver_phone} />
             <DetailRow icon="location-outline" value={order.receiver_address} />
+            {order.pay_currency && order.pay_amount !== null && (
+              <DetailRow
+                icon="card-outline"
+                value={`You paid ${order.pay_currency} ${order.pay_amount.toFixed(2)}${
+                  order.fee_amount !== null ? ` (fee ${order.pay_currency} ${order.fee_amount.toFixed(2)})` : ''
+                }${order.fx_rate !== null ? ` at 1 ${order.pay_currency} = ₱${order.fx_rate.toFixed(4)}` : ''}`}
+              />
+            )}
             {order.status !== 'cancelled' && order.partner_name !== '' && (
               <DetailRow
                 icon="bicycle-outline"
@@ -318,7 +328,11 @@ export default function P2POrderScreen() {
                 `Only do this once ${order.receiver_name} confirms they have the cash. ${amountText} goes to ${order.partner_name} and cannot be taken back.`,
                 'Release',
                 false,
-                () => run(() => releaseP2POrder(order.id), 'Could not release'),
+                async () => {
+                  if (await confirmWithBiometrics(userId, `Confirm releasing ${amountText}`)) {
+                    run(() => releaseP2POrder(order.id), 'Could not release');
+                  }
+                },
               )
             }
           />
