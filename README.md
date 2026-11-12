@@ -14,6 +14,7 @@ A GCash-style digital wallet app for Filipinos with AI-powered multi-currency ca
 - **Fingerprint / Face ID Lock** — Unlocks the app and confirms sending or receiving money
 - **Send from Abroad** — Pay in AED, USD or EUR at a rate and fee held for 10 minutes
 - **Withdrawals** — Cash out wallet balance to GCash, Maya or a bank, paid out by a reviewer
+- **Direct Pay** — Find the nearest partner on a map and pay them yourself by GCash, GoTyme or Maya after an OTP hand-over
 - **P2P Cash Delivery** — Send cash to anyone in the Philippines through the closest cash partner, with escrow
 - **Users Online Map** — Live map of signed-in users, with opt-in approximate location
 
@@ -77,6 +78,7 @@ app/
   p2p/                 P2P cash delivery (hub, new order, order detail)
   kyc/                 Identity verification, manual submission, admin review
   withdraw/            Withdrawal request and payout review
+  direct/              Direct Pay (hub, partner map, order with chat)
 contexts/
   auth.tsx             Authentication context & provider
   presence.tsx         Who is online + location sharing choice
@@ -159,6 +161,24 @@ It is on by default when the phone has a fingerprint or face set up, falls back 
 ID photos and selfies for manual review go to the private `kyc-documents` storage bucket. Users can add files to their own folder only and cannot read them back; only reviewers can view them, through links that expire after 5 minutes. Decide how long you keep them and delete older files from the Supabase dashboard.
 
 Server tests: `deno test supabase/functions/_tests`.
+
+## Direct Pay (GCash, GoTyme, Maya)
+
+A separate way to send cash where **no money passes through YTCash**. Open it from the **Direct Pay** card on the Wallet screen.
+
+1. The sender enters the amount and their friend's address. The app shows the friend and up to 5 available partners within 30 km on a map, nearest first.
+2. The sender picks a partner and one of the payment apps that partner accepts, and sends a request. Both can chat in the app.
+3. The partner accepts and brings their own cash to the friend. The sender passes a 6-digit OTP to the friend, who gives it to the partner after counting the cash.
+4. Entering the OTP reveals the partner's account number to the sender, who pays from their own GCash, GoTyme or Maya app and enters the reference number.
+5. The partner checks their app and confirms. If no payment arrives, they can report it after 30 minutes.
+
+There is **no integration with GCash, GoTyme or Maya**: YTCash cannot see or verify the transfer. Both sides confirm by hand.
+
+**The partner carries the risk.** They hand over cash before being paid. What the app does about it: the account to pay is fixed when the partner accepts; a sender with a delivery awaiting payment cannot start another; a reported sender is blocked until they pay and the partner confirms; a reviewer can settle a report with `select public.direct_resolve_dispute('<order id>', 'completed' | 'unpaid', 'note');`. Requiring KYC for P2P (`kyc_settings.required_for`) also applies here.
+
+**Becoming a Direct Pay partner:** turn on "Deliver cash near me" in P2P Cash Delivery, then add a GCash, GoTyme or Maya account under Direct Pay → Deliver cash. Listed partners' first name and area (rounded to about 1 km) are visible to senders searching nearby; account numbers are not, until a delivery is confirmed.
+
+**Map:** set `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` (Maps JavaScript API) to use Google Maps. Without a key, or if Google rejects it, the same map is drawn with OpenStreetMap. Partners get an "Open in Google Maps" button for directions either way.
 
 ## Sending from Abroad (quotes)
 

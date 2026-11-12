@@ -73,6 +73,9 @@ function AuthGate() {
       <Stack.Screen name="kyc/review/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="withdraw/index" options={{ headerShown: false }} />
       <Stack.Screen name="withdraw/review" options={{ headerShown: false }} />
+      <Stack.Screen name="direct/index" options={{ headerShown: false }} />
+      <Stack.Screen name="direct/new" options={{ headerShown: false }} />
+      <Stack.Screen name="direct/[id]" options={{ headerShown: false }} />
     </Stack>
   );
 }

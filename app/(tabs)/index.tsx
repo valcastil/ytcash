@@ -262,6 +262,27 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Direct Pay: pay a partner yourself with GCash, GoTyme or Maya */}
+      <View style={[styles.section, styles.sectionTight]}>
+        <TouchableOpacity
+          style={[styles.onlineCard, styles.directCard]}
+          onPress={() => router.push('/direct')}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="Open Direct Pay">
+          <View style={[styles.onlineIconWrap, styles.directIconWrap]}>
+            <Ionicons name="map" size={22} color={BitcoinColors.cyan} />
+          </View>
+          <View style={styles.onlineTextWrap}>
+            <Text style={styles.onlineTitle}>Direct Pay</Text>
+            <Text style={[styles.onlineSub, styles.p2pSub]}>
+              Find the nearest partner and pay them by GCash, GoTyme or Maya after delivery
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={BitcoinColors.textMuted} />
+        </TouchableOpacity>
+      </View>
+
       {/* Users Online — opens the live map */}
       <View style={[styles.section, styles.sectionTight]}>
         <TouchableOpacity
@@ -746,6 +767,13 @@ const styles = StyleSheet.create({
   p2pIconWrap: {
     backgroundColor: 'rgba(247, 147, 26, 0.12)',
     borderColor: 'rgba(247, 147, 26, 0.3)',
+  },
+  directCard: {
+    borderColor: 'rgba(6, 182, 212, 0.35)',
+  },
+  directIconWrap: {
+    backgroundColor: 'rgba(6, 182, 212, 0.12)',
+    borderColor: 'rgba(6, 182, 212, 0.3)',
   },
   p2pSub: {
     marginTop: 3,

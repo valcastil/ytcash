@@ -261,6 +261,11 @@ create table if not exists public.p2p_orders (
   expires_at timestamptz not null default now() + interval '24 hours'
 );
 
+-- 'escrow': money is held in the YTCash wallet. 'direct': the sender pays the partner
+-- themselves after delivery (section 13); no wallet money is involved.
+alter table public.p2p_orders add column if not exists mode text not null default 'escrow'
+  check (mode in ('escrow', 'direct'));
+
 create index if not exists idx_p2p_orders_sender on public.p2p_orders(sender_id, created_at desc);
 create index if not exists idx_p2p_orders_partner on public.p2p_orders(partner_id, created_at desc);
 
@@ -470,7 +475,7 @@ begin
   perform public.kyc_require('p2p');
   update public.p2p_orders
     set status = 'accepted', accepted_at = now()
-    where id = p_order_id and partner_id = auth.uid() and status = 'matched'
+    where id = p_order_id and partner_id = auth.uid() and status = 'matched' and mode = 'escrow'
     returning * into v_order;
   if not found then
     raise exception 'ORDER_NOT_AVAILABLE';
@@ -493,7 +498,7 @@ declare
   v_next record;
 begin
   select * into v_order from public.p2p_orders
-    where id = p_order_id and partner_id = v_uid and status in ('matched', 'accepted')
+    where id = p_order_id and partner_id = v_uid and status in ('matched', 'accepted') and mode = 'escrow'
     for update;
   if not found then
     raise exception 'ORDER_NOT_AVAILABLE';
@@ -533,7 +538,7 @@ declare
   v_order public.p2p_orders;
 begin
   select * into v_order from public.p2p_orders
-    where id = p_order_id and sender_id = auth.uid() and status in ('matched', 'accepted')
+    where id = p_order_id and sender_id = auth.uid() and status in ('matched', 'accepted') and mode = 'escrow'
     for update;
   if not found then
     raise exception 'ORDER_NOT_AVAILABLE';
@@ -559,7 +564,7 @@ declare
   v_attempts integer;
 begin
   select * into v_order from public.p2p_orders
-    where id = p_order_id and partner_id = auth.uid() and status = 'accepted'
+    where id = p_order_id and partner_id = auth.uid() and status = 'accepted' and mode = 'escrow'
     for update;
   if not found then
     raise exception 'ORDER_NOT_AVAILABLE';
@@ -597,7 +602,7 @@ declare
   v_order public.p2p_orders;
 begin
   select * into v_order from public.p2p_orders
-    where id = p_order_id and sender_id = auth.uid() and status = 'accepted'
+    where id = p_order_id and sender_id = auth.uid() and status = 'accepted' and mode = 'escrow'
     for update;
   if not found then
     raise exception 'ORDER_NOT_AVAILABLE';
@@ -1946,4 +1951,989 @@ begin
     grant execute on function public.fx_set_reference_rate(text, numeric) to service_role;
     grant select on public.wallet_fx_reference to service_role;
   end if;
+end $$;
+
+
+-- ============================================================
+-- 13. Direct pay: deliver first, pay the partner afterwards
+-- No money passes through YTCash. The sender picks a nearby partner, the
+-- partner hands cash to the receiver, the receiver gives the partner the
+-- release code (OTP), and only then is the sender shown the partner's
+-- GCash / Maya / GoTyme account to pay. YTCash records each step.
+--
+-- The partner carries the risk of not being paid, so: a sender with an
+-- unpaid or disputed delivery cannot start another, and partners see
+-- whether the sender's identity is verified before accepting.
+-- ============================================================
+
+-- 13a. Partner details for direct pay
+alter table public.p2p_partners add column if not exists accepts_direct boolean not null default false;
+-- Shared with a sender only after the partner accepts their request.
+alter table public.p2p_partners add column if not exists contact_phone text;
+
+create table if not exists public.p2p_partner_payouts (
+  user_id uuid references public.users(id) on delete cascade not null,
+  method text not null check (method in ('gcash', 'maya', 'gotyme')),
+  account_name text not null check (length(trim(account_name)) >= 2),
+  account_number text not null check (account_number ~ '^\+?[0-9]{7,20}$'),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, method)
+);
+
+alter table public.p2p_partner_payouts enable row level security;
+
+drop policy if exists "Partners manage own payout accounts" on public.p2p_partner_payouts;
+
+-- Only the partner can read these. A sender sees one account, copied onto
+-- their order, once the delivery has been confirmed with the release code.
+create policy "Partners manage own payout accounts"
+  on public.p2p_partner_payouts for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- 13b. Order fields and statuses for direct pay
+alter table public.p2p_orders add column if not exists pay_method text check (pay_method in ('gcash', 'maya', 'gotyme'));
+alter table public.p2p_orders add column if not exists sender_contact text;
+alter table public.p2p_orders add column if not exists sender_verified boolean not null default false;
+alter table public.p2p_orders add column if not exists partner_contact text;
+alter table public.p2p_orders add column if not exists pay_account_name text;
+alter table public.p2p_orders add column if not exists pay_account_number text;
+alter table public.p2p_orders add column if not exists payment_reference text;
+alter table public.p2p_orders add column if not exists delivered_at timestamptz;
+alter table public.p2p_orders add column if not exists paid_at timestamptz;
+
+--   delivered : cash handed over and confirmed with the code; sender has not paid yet
+--   paid      : sender says they sent the payment; partner has not confirmed it
+--   disputed  : partner reports the payment did not arrive
+alter table public.p2p_orders drop constraint if exists p2p_orders_status_check;
+alter table public.p2p_orders add constraint p2p_orders_status_check
+  check (status in ('matched', 'accepted', 'delivered', 'paid', 'disputed', 'completed', 'cancelled'));
+
+-- 13c. Finding partners
+-- Internal: partners who can take a direct-pay delivery near a point, nearest first.
+create or replace function public.p2p_direct_candidates(
+  p_lat double precision, p_lng double precision, p_method text, p_exclude uuid
+)
+returns table (partner_id uuid, partner_name text, lat double precision, lng double precision, distance_km double precision)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    p.user_id,
+    coalesce(nullif(split_part(trim(u.full_name), ' ', 1), ''), 'YTCash partner'),
+    p.lat, p.lng,
+    public.p2p_distance_km(p_lat, p_lng, p.lat, p.lng) as km
+  from public.p2p_partners p
+  join public.users u on u.id = p.user_id
+  join public.p2p_partner_payouts a on a.user_id = p.user_id and a.method = p_method
+  where p.is_available
+    and p.accepts_direct
+    and p.contact_phone is not null
+    and p.user_id <> p_exclude
+    and public.p2p_distance_km(p_lat, p_lng, p.lat, p.lng) <= 30
+  order by km asc, p.updated_at desc
+  limit 5;
+$$;
+
+-- Sender: the nearest partners to the receiver, for the map. Partner positions are
+-- the rounded (about 1 km) areas they chose to share; no contact details are returned.
+create or replace function public.p2p_nearby_partners(p_lat double precision, p_lng double precision, p_method text)
+returns table (partner_id uuid, partner_name text, lat double precision, lng double precision, distance_km double precision)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  if p_lat is null or p_lng is null or p_lat not between -90 and 90 or p_lng not between -180 and 180
+     or p_method is null or p_method not in ('gcash', 'maya', 'gotyme') then
+    raise exception 'INVALID_RECEIVER';
+  end if;
+  return query select * from public.p2p_direct_candidates(p_lat, p_lng, p_method, auth.uid());
+end;
+$$;
+
+-- 13d. Order steps
+-- Sender: ask a partner to deliver. Nothing is charged.
+create or replace function public.p2p_direct_create(
+  p_amount numeric,
+  p_receiver_name text,
+  p_receiver_phone text,
+  p_receiver_address text,
+  p_lat double precision,
+  p_lng double precision,
+  p_method text,
+  p_sender_contact text,
+  p_partner_id uuid default null
+)
+returns public.p2p_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_amount numeric(12,2) := round(p_amount, 2);
+  v_contact text := regexp_replace(coalesce(p_sender_contact, ''), '[\s-]', '', 'g');
+  v_sender public.users;
+  v_partner record;
+  v_order public.p2p_orders;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  perform public.kyc_require('p2p');
+  if v_amount is null or v_amount < 100 or v_amount > 50000 then
+    raise exception 'INVALID_AMOUNT';
+  end if;
+  if p_method is null or p_method not in ('gcash', 'maya', 'gotyme') then
+    raise exception 'INVALID_METHOD';
+  end if;
+  if length(trim(coalesce(p_receiver_name, ''))) < 2
+     or length(trim(coalesce(p_receiver_phone, ''))) < 7
+     or length(trim(coalesce(p_receiver_address, ''))) < 5
+     or p_lat is null or p_lng is null
+     or p_lat not between -90 and 90 or p_lng not between -180 and 180 then
+    raise exception 'INVALID_RECEIVER';
+  end if;
+  if v_contact !~ '^\+?[0-9]{7,20}$' then
+    raise exception 'INVALID_CONTACT';
+  end if;
+
+  select * into v_sender from public.users where id = v_uid for update;
+  if not found then
+    raise exception 'PROFILE_MISSING';
+  end if;
+  -- A delivery that was made but not yet paid for blocks new requests.
+  if exists (select 1 from public.p2p_orders
+             where sender_id = v_uid and mode = 'direct' and status in ('delivered', 'disputed')) then
+    raise exception 'UNPAID_ORDER';
+  end if;
+  if (select count(*) from public.p2p_orders
+      where sender_id = v_uid and mode = 'direct' and status in ('matched', 'accepted', 'paid')) >= 3 then
+    raise exception 'TOO_MANY_OPEN';
+  end if;
+
+  select * into v_partner
+    from public.p2p_direct_candidates(p_lat, p_lng, p_method, v_uid) c
+    where p_partner_id is null or c.partner_id = p_partner_id
+    order by c.distance_km asc
+    limit 1;
+  if v_partner.partner_id is null then
+    raise exception 'NO_PARTNER_NEARBY';
+  end if;
+
+  insert into public.p2p_orders
+    (mode, pay_method, sender_id, partner_id, sender_name, partner_name, amount,
+     receiver_name, receiver_phone, receiver_address, receiver_lat, receiver_lng,
+     distance_km, sender_contact, sender_verified)
+  values
+    ('direct', p_method, v_uid, v_partner.partner_id,
+     coalesce(nullif(split_part(trim(v_sender.full_name), ' ', 1), ''), 'YTCash user'),
+     v_partner.partner_name, v_amount,
+     left(trim(p_receiver_name), 80), left(trim(p_receiver_phone), 30),
+     left(trim(p_receiver_address), 300), p_lat, p_lng,
+     round(v_partner.distance_km::numeric, 2), v_contact, v_sender.kyc_verified)
+  returning * into v_order;
+
+  insert into public.p2p_order_codes (order_id, code)
+  values (
+    v_order.id,
+    lpad(((('x' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 7))::bit(28)::int) % 1000000)::text, 6, '0')
+  );
+  return v_order;
+end;
+$$;
+
+-- Partner: accept. The sender can now see the partner's contact number.
+create or replace function public.p2p_direct_accept(p_order_id uuid)
+returns public.p2p_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.p2p_orders;
+begin
+  perform public.kyc_require('p2p');
+  update public.p2p_orders o
+    set status = 'accepted', accepted_at = now(),
+        partner_contact = (select contact_phone from public.p2p_partners where user_id = auth.uid())
+    where o.id = p_order_id and o.partner_id = auth.uid() and o.status = 'matched' and o.mode = 'direct'
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- Partner declines or sender cancels: allowed until the cash has been handed over.
+create or replace function public.p2p_direct_cancel(p_order_id uuid)
+returns public.p2p_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_order public.p2p_orders;
+begin
+  update public.p2p_orders
+    set status = 'cancelled', cancelled_at = now(),
+        cancel_reason = case when sender_id = v_uid then 'sender_cancelled' else 'partner_declined' end
+    where id = p_order_id and mode = 'direct' and status in ('matched', 'accepted')
+      and (sender_id = v_uid or partner_id = v_uid)
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- Partner: confirm the hand-over with the receiver's code. Only now does the
+-- sender get the partner's payment account.
+create or replace function public.p2p_direct_deliver(p_order_id uuid, p_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.p2p_orders;
+  v_account public.p2p_partner_payouts;
+  v_code text;
+  v_attempts integer;
+begin
+  select * into v_order from public.p2p_orders
+    where id = p_order_id and partner_id = auth.uid() and status = 'accepted' and mode = 'direct'
+    for update;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  if v_order.failed_code_attempts >= 5 then
+    return jsonb_build_object('ok', false, 'reason', 'locked', 'attempts_left', 0);
+  end if;
+  select * into v_account from public.p2p_partner_payouts
+    where user_id = v_order.partner_id and method = v_order.pay_method;
+  if not found then
+    raise exception 'PAYOUT_ACCOUNT_MISSING';
+  end if;
+
+  select code into v_code from public.p2p_order_codes where order_id = v_order.id;
+  if v_code is null or v_code <> trim(coalesce(p_code, '')) then
+    update public.p2p_orders
+      set failed_code_attempts = failed_code_attempts + 1
+      where id = v_order.id
+      returning failed_code_attempts into v_attempts;
+    return jsonb_build_object(
+      'ok', false,
+      'reason', case when v_attempts >= 5 then 'locked' else 'wrong_code' end,
+      'attempts_left', greatest(0, 5 - v_attempts)
+    );
+  end if;
+
+  update public.p2p_orders
+    set status = 'delivered', delivered_at = now(),
+        pay_account_name = v_account.account_name,
+        pay_account_number = v_account.account_number
+    where id = v_order.id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- Sender: say the payment was sent, with the reference from their e-wallet.
+create or replace function public.p2p_direct_mark_paid(p_order_id uuid, p_reference text)
+returns public.p2p_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.p2p_orders;
+begin
+  if length(trim(coalesce(p_reference, ''))) < 3 then
+    raise exception 'REFERENCE_REQUIRED';
+  end if;
+  update public.p2p_orders
+    set status = 'paid', paid_at = now(), payment_reference = left(trim(p_reference), 60)
+    where id = p_order_id and sender_id = auth.uid() and mode = 'direct' and status in ('delivered', 'disputed')
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- Partner: the payment arrived. Closes the order.
+create or replace function public.p2p_direct_confirm_received(p_order_id uuid)
+returns public.p2p_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.p2p_orders;
+begin
+  update public.p2p_orders
+    set status = 'completed', completed_at = now()
+    where id = p_order_id and partner_id = auth.uid() and mode = 'direct'
+      and status in ('delivered', 'paid', 'disputed')
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- Partner: the payment did not arrive. Possible straight away once the sender claims
+-- to have paid, or an hour after delivery if the sender has done nothing.
+create or replace function public.p2p_direct_report_unpaid(p_order_id uuid)
+returns public.p2p_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.p2p_orders;
+begin
+  select * into v_order from public.p2p_orders
+    where id = p_order_id and partner_id = auth.uid() and mode = 'direct' and status in ('delivered', 'paid')
+    for update;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  if v_order.status = 'delivered' and v_order.delivered_at > now() - interval '1 hour' then
+    raise exception 'TOO_EARLY';
+  end if;
+  update public.p2p_orders set status = 'disputed' where id = v_order.id returning * into v_order;
+  return v_order;
+end;
+$$;
+
+-- 13e. Who may call what
+revoke execute on function public.p2p_direct_candidates(double precision, double precision, text, uuid) from public, anon, authenticated;
+
+revoke execute on function public.p2p_nearby_partners(double precision, double precision, text) from public, anon;
+revoke execute on function public.p2p_direct_create(numeric, text, text, text, double precision, double precision, text, text, uuid) from public, anon;
+revoke execute on function public.p2p_direct_accept(uuid) from public, anon;
+revoke execute on function public.p2p_direct_cancel(uuid) from public, anon;
+revoke execute on function public.p2p_direct_deliver(uuid, text) from public, anon;
+revoke execute on function public.p2p_direct_mark_paid(uuid, text) from public, anon;
+revoke execute on function public.p2p_direct_confirm_received(uuid) from public, anon;
+revoke execute on function public.p2p_direct_report_unpaid(uuid) from public, anon;
+
+grant execute on function public.p2p_nearby_partners(double precision, double precision, text) to authenticated;
+grant execute on function public.p2p_direct_create(numeric, text, text, text, double precision, double precision, text, text, uuid) to authenticated;
+grant execute on function public.p2p_direct_accept(uuid) to authenticated;
+grant execute on function public.p2p_direct_cancel(uuid) to authenticated;
+grant execute on function public.p2p_direct_deliver(uuid, text) to authenticated;
+grant execute on function public.p2p_direct_mark_paid(uuid, text) to authenticated;
+grant execute on function public.p2p_direct_confirm_received(uuid) to authenticated;
+grant execute on function public.p2p_direct_report_unpaid(uuid) to authenticated;
+
+-- ============================================================
+-- 13. Direct Pay (GCash, GoTyme, Maya)
+-- No money passes through YTCash here. The sender picks a nearby cash
+-- partner, the partner hands cash to the receiver, the receiver gives the
+-- partner an OTP code, and only then does the sender pay the partner
+-- directly from their own GCash, GoTyme or Maya app.
+--
+-- The partner is paid AFTER handing over cash, so the partner carries the
+-- risk of a sender who does not pay. Senders with an unpaid delivery cannot
+-- start another one, and partners can report non-payment.
+-- ============================================================
+
+-- 13a. Where a partner wants to be paid
+create table if not exists public.partner_payout_accounts (
+  user_id uuid references public.users(id) on delete cascade not null,
+  method text not null check (method in ('gcash', 'gotyme', 'maya')),
+  account_name text not null,
+  account_number text not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, method)
+);
+alter table public.partner_payout_accounts enable row level security;
+revoke all on public.partner_payout_accounts from anon, authenticated;
+grant select on public.partner_payout_accounts to authenticated;
+
+drop policy if exists "Partners can view own payout accounts" on public.partner_payout_accounts;
+create policy "Partners can view own payout accounts"
+  on public.partner_payout_accounts for select
+  using (auth.uid() = user_id);
+
+-- 13b. Orders
+create table if not exists public.direct_orders (
+  id uuid default gen_random_uuid() primary key,
+  sender_id uuid references public.users(id) not null,
+  partner_id uuid references public.users(id) not null,
+  sender_name text not null default '',
+  partner_name text not null default '',
+  amount numeric(12,2) not null check (amount > 0),
+  method text not null check (method in ('gcash', 'gotyme', 'maya')),
+  receiver_name text not null,
+  receiver_phone text not null,
+  receiver_address text not null,
+  receiver_lat double precision not null,
+  receiver_lng double precision not null,
+  distance_km numeric(8,2),
+  -- requested -> accepted -> delivered (OTP given) -> paid (sender says so) -> completed (partner got it)
+  -- declined / cancelled end it early. disputed = partner reports no payment. unpaid = confirmed by a reviewer.
+  status text not null default 'requested'
+    check (status in ('requested', 'accepted', 'delivered', 'paid', 'completed',
+                      'declined', 'cancelled', 'disputed', 'unpaid')),
+  payment_reference text,
+  resolution_note text,
+  failed_code_attempts integer not null default 0,
+  created_at timestamptz not null default now(),
+  accepted_at timestamptz,
+  delivered_at timestamptz,
+  paid_at timestamptz,
+  completed_at timestamptz,
+  closed_at timestamptz
+);
+create index if not exists idx_direct_orders_sender on public.direct_orders(sender_id, created_at desc);
+create index if not exists idx_direct_orders_partner on public.direct_orders(partner_id, created_at desc);
+
+alter table public.direct_orders enable row level security;
+revoke all on public.direct_orders from anon, authenticated;
+grant select on public.direct_orders to authenticated;
+
+drop policy if exists "Sender and partner can view direct order" on public.direct_orders;
+drop policy if exists "Reviewers can view disputed direct orders" on public.direct_orders;
+
+create policy "Sender and partner can view direct order"
+  on public.direct_orders for select
+  using (auth.uid() = sender_id or auth.uid() = partner_id);
+
+create policy "Reviewers can view disputed direct orders"
+  on public.direct_orders for select
+  using (status in ('disputed', 'unpaid') and public.kyc_is_admin());
+
+-- The OTP: only the sender can read it, to pass to the receiver.
+create table if not exists public.direct_order_codes (
+  order_id uuid references public.direct_orders(id) on delete cascade primary key,
+  code text not null
+);
+alter table public.direct_order_codes enable row level security;
+revoke all on public.direct_order_codes from anon, authenticated;
+grant select on public.direct_order_codes to authenticated;
+
+drop policy if exists "Sender can view direct order code" on public.direct_order_codes;
+create policy "Sender can view direct order code"
+  on public.direct_order_codes for select
+  using (exists (select 1 from public.direct_orders o where o.id = order_id and o.sender_id = auth.uid()));
+
+-- The account to pay, fixed when the partner accepts. The sender can only see it
+-- once the cash has been handed over.
+create table if not exists public.direct_order_payment (
+  order_id uuid references public.direct_orders(id) on delete cascade primary key,
+  account_name text not null,
+  account_number text not null
+);
+alter table public.direct_order_payment enable row level security;
+revoke all on public.direct_order_payment from anon, authenticated;
+grant select on public.direct_order_payment to authenticated;
+
+drop policy if exists "Parties can view payment details when due" on public.direct_order_payment;
+create policy "Parties can view payment details when due"
+  on public.direct_order_payment for select
+  using (
+    exists (
+      select 1 from public.direct_orders o
+      where o.id = order_id
+        and (
+          o.partner_id = auth.uid()
+          or (o.sender_id = auth.uid() and o.status in ('delivered', 'paid', 'completed', 'disputed', 'unpaid'))
+        )
+    )
+  );
+
+-- Chat between the sender and the partner of one order
+create table if not exists public.direct_order_messages (
+  id uuid default gen_random_uuid() primary key,
+  order_id uuid references public.direct_orders(id) on delete cascade not null,
+  author_id uuid references public.users(id) not null,
+  body text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_direct_messages_order on public.direct_order_messages(order_id, created_at);
+
+alter table public.direct_order_messages enable row level security;
+revoke all on public.direct_order_messages from anon, authenticated;
+grant select on public.direct_order_messages to authenticated;
+
+drop policy if exists "Parties can read order messages" on public.direct_order_messages;
+create policy "Parties can read order messages"
+  on public.direct_order_messages for select
+  using (
+    exists (
+      select 1 from public.direct_orders o
+      where o.id = order_id and (o.sender_id = auth.uid() or o.partner_id = auth.uid())
+    )
+  );
+
+-- 13c. Partner: payout accounts
+create or replace function public.partner_set_payout_account(p_method text, p_account_name text, p_account_number text)
+returns public.partner_payout_accounts
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_number text := regexp_replace(coalesce(p_account_number, ''), '[\s-]', '', 'g');
+  v_row public.partner_payout_accounts;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  if p_method is null or p_method not in ('gcash', 'gotyme', 'maya')
+     or length(trim(coalesce(p_account_name, ''))) < 2
+     or v_number !~ '^\+?[0-9]{7,20}$' then
+    raise exception 'INVALID_ACCOUNT';
+  end if;
+
+  insert into public.partner_payout_accounts (user_id, method, account_name, account_number)
+  values (v_uid, p_method, left(trim(p_account_name), 80), v_number)
+  on conflict (user_id, method) do update
+    set account_name = excluded.account_name, account_number = excluded.account_number, updated_at = now()
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+
+create or replace function public.partner_remove_payout_account(p_method text)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  delete from public.partner_payout_accounts where user_id = auth.uid() and method = p_method;
+$$;
+
+-- 13d. Sender: who can deliver near this point?
+-- Returns up to 5 available partners within 30 km, nearest first. Only a first
+-- name, an area rounded to about 1 km, and which apps they accept are shared.
+create or replace function public.direct_find_partners(p_lat double precision, p_lng double precision)
+returns table (
+  partner_id uuid,
+  name text,
+  lat double precision,
+  lng double precision,
+  distance_km double precision,
+  methods text[],
+  completed_orders integer
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    p.user_id,
+    coalesce(nullif(split_part(trim(u.full_name), ' ', 1), ''), 'YTCash partner'),
+    round(p.lat::numeric, 2)::double precision,
+    round(p.lng::numeric, 2)::double precision,
+    public.p2p_distance_km(p_lat, p_lng, p.lat, p.lng) as km,
+    (select array_agg(a.method order by a.method) from public.partner_payout_accounts a where a.user_id = p.user_id),
+    (select count(*)::integer from public.direct_orders o where o.partner_id = p.user_id and o.status = 'completed')
+  from public.p2p_partners p
+  join public.users u on u.id = p.user_id
+  where auth.uid() is not null
+    and p_lat between -90 and 90 and p_lng between -180 and 180
+    and p.is_available
+    and p.user_id <> auth.uid()
+    and exists (select 1 from public.partner_payout_accounts a where a.user_id = p.user_id)
+    and public.p2p_distance_km(p_lat, p_lng, p.lat, p.lng) <= 30
+  order by km asc, p.updated_at desc
+  limit 5;
+$$;
+
+-- 13e. Sender: ask a partner to deliver
+create or replace function public.direct_create_order(
+  p_partner_id uuid,
+  p_amount numeric,
+  p_method text,
+  p_receiver_name text,
+  p_receiver_phone text,
+  p_receiver_address text,
+  p_lat double precision,
+  p_lng double precision
+)
+returns public.direct_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_amount numeric(12,2) := round(p_amount, 2);
+  v_sender_name text;
+  v_partner record;
+  v_account public.partner_payout_accounts;
+  v_order public.direct_orders;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  perform public.kyc_require('p2p');
+
+  select coalesce(nullif(split_part(trim(full_name), ' ', 1), ''), 'YTCash user') into v_sender_name
+    from public.users where id = v_uid;
+  if not found then
+    raise exception 'PROFILE_MISSING';
+  end if;
+
+  -- A sender who still owes a partner cannot start another delivery.
+  if exists (select 1 from public.direct_orders
+             where sender_id = v_uid and status in ('disputed', 'unpaid')) then
+    raise exception 'BLOCKED_UNPAID';
+  end if;
+  if exists (select 1 from public.direct_orders where sender_id = v_uid and status = 'delivered') then
+    raise exception 'PAY_PREVIOUS_FIRST';
+  end if;
+  if (select count(*) from public.direct_orders
+      where sender_id = v_uid and status in ('requested', 'accepted')) >= 3 then
+    raise exception 'TOO_MANY_OPEN';
+  end if;
+
+  if v_amount is null or v_amount < 100 or v_amount > 50000 then
+    raise exception 'INVALID_AMOUNT';
+  end if;
+  if length(trim(coalesce(p_receiver_name, ''))) < 2
+     or length(trim(coalesce(p_receiver_phone, ''))) < 7
+     or length(trim(coalesce(p_receiver_address, ''))) < 5
+     or p_lat is null or p_lng is null
+     or p_lat not between -90 and 90 or p_lng not between -180 and 180 then
+    raise exception 'INVALID_RECEIVER';
+  end if;
+
+  select p.user_id,
+         coalesce(nullif(split_part(trim(u.full_name), ' ', 1), ''), 'YTCash partner') as name,
+         public.p2p_distance_km(p_lat, p_lng, p.lat, p.lng) as km
+    into v_partner
+    from public.p2p_partners p join public.users u on u.id = p.user_id
+    where p.user_id = p_partner_id and p.is_available and p.user_id <> v_uid;
+  if not found or v_partner.km > 30 then
+    raise exception 'PARTNER_NOT_AVAILABLE';
+  end if;
+  select * into v_account from public.partner_payout_accounts
+    where user_id = p_partner_id and method = p_method;
+  if not found then
+    raise exception 'METHOD_NOT_ACCEPTED';
+  end if;
+
+  insert into public.direct_orders
+    (sender_id, partner_id, sender_name, partner_name, amount, method,
+     receiver_name, receiver_phone, receiver_address, receiver_lat, receiver_lng, distance_km)
+  values
+    (v_uid, p_partner_id, v_sender_name, v_partner.name, v_amount, p_method,
+     left(trim(p_receiver_name), 80), left(trim(p_receiver_phone), 30),
+     left(trim(p_receiver_address), 300), p_lat, p_lng, round(v_partner.km::numeric, 2))
+  returning * into v_order;
+
+  insert into public.direct_order_codes (order_id, code)
+  values (
+    v_order.id,
+    lpad(((('x' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 7))::bit(28)::int) % 1000000)::text, 6, '0')
+  );
+  insert into public.direct_order_payment (order_id, account_name, account_number)
+  values (v_order.id, v_account.account_name, v_account.account_number);
+
+  return v_order;
+end;
+$$;
+
+-- 13f. Partner: accept or decline
+create or replace function public.direct_accept_order(p_order_id uuid)
+returns public.direct_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.direct_orders;
+  v_account public.partner_payout_accounts;
+begin
+  perform public.kyc_require('p2p');
+  select * into v_order from public.direct_orders
+    where id = p_order_id and partner_id = auth.uid() and status = 'requested'
+    for update;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+
+  -- Fix the account to pay now, so it cannot change after the cash is handed over.
+  select * into v_account from public.partner_payout_accounts
+    where user_id = v_order.partner_id and method = v_order.method;
+  if not found then
+    raise exception 'METHOD_NOT_ACCEPTED';
+  end if;
+  update public.direct_order_payment
+    set account_name = v_account.account_name, account_number = v_account.account_number
+    where order_id = v_order.id;
+
+  update public.direct_orders set status = 'accepted', accepted_at = now()
+    where id = v_order.id
+    returning * into v_order;
+  return v_order;
+end;
+$$;
+
+-- Partner declines a request, or gives up one they accepted but have not delivered.
+create or replace function public.direct_decline_order(p_order_id uuid)
+returns public.direct_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.direct_orders;
+begin
+  update public.direct_orders set status = 'declined', closed_at = now()
+    where id = p_order_id and partner_id = auth.uid() and status in ('requested', 'accepted')
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- Sender cancels before the cash is handed over.
+create or replace function public.direct_cancel_order(p_order_id uuid)
+returns public.direct_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.direct_orders;
+begin
+  update public.direct_orders set status = 'cancelled', closed_at = now()
+    where id = p_order_id and sender_id = auth.uid() and status in ('requested', 'accepted')
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- 13g. Partner: confirm the hand-over with the receiver's OTP.
+-- Returns { ok, reason?, attempts_left? } so a wrong attempt is still counted.
+create or replace function public.direct_confirm_delivery(p_order_id uuid, p_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.direct_orders;
+  v_code text;
+  v_attempts integer;
+begin
+  select * into v_order from public.direct_orders
+    where id = p_order_id and partner_id = auth.uid() and status = 'accepted'
+    for update;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  if v_order.failed_code_attempts >= 5 then
+    return jsonb_build_object('ok', false, 'reason', 'locked', 'attempts_left', 0);
+  end if;
+
+  select code into v_code from public.direct_order_codes where order_id = v_order.id;
+  if v_code is null or v_code <> trim(coalesce(p_code, '')) then
+    update public.direct_orders set failed_code_attempts = failed_code_attempts + 1
+      where id = v_order.id
+      returning failed_code_attempts into v_attempts;
+    return jsonb_build_object(
+      'ok', false,
+      'reason', case when v_attempts >= 5 then 'locked' else 'wrong_code' end,
+      'attempts_left', greatest(0, 5 - v_attempts)
+    );
+  end if;
+
+  update public.direct_orders set status = 'delivered', delivered_at = now() where id = v_order.id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- 13h. Sender: "I have paid the partner" (also clears a non-payment report)
+create or replace function public.direct_mark_paid(p_order_id uuid, p_reference text)
+returns public.direct_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.direct_orders;
+begin
+  if length(trim(coalesce(p_reference, ''))) < 4 then
+    raise exception 'REFERENCE_REQUIRED';
+  end if;
+  update public.direct_orders
+    set status = 'paid', paid_at = now(), payment_reference = left(trim(p_reference), 60)
+    where id = p_order_id and sender_id = auth.uid() and status in ('delivered', 'disputed', 'unpaid')
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- Partner: "I received the payment"
+create or replace function public.direct_confirm_payment(p_order_id uuid)
+returns public.direct_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.direct_orders;
+begin
+  update public.direct_orders set status = 'completed', completed_at = now(), closed_at = now()
+    where id = p_order_id and partner_id = auth.uid() and status in ('delivered', 'paid', 'disputed', 'unpaid')
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- Partner: report that the sender has not paid. Allowed 30 minutes after the
+-- hand-over, or 30 minutes after the sender claimed to have paid.
+create or replace function public.direct_report_unpaid(p_order_id uuid)
+returns public.direct_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.direct_orders;
+begin
+  select * into v_order from public.direct_orders
+    where id = p_order_id and partner_id = auth.uid() and status in ('delivered', 'paid')
+    for update;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  if coalesce(v_order.paid_at, v_order.delivered_at) > now() - interval '30 minutes' then
+    raise exception 'TOO_EARLY';
+  end if;
+  update public.direct_orders set status = 'disputed' where id = v_order.id returning * into v_order;
+  return v_order;
+end;
+$$;
+
+-- Reviewer: settle a report. 'completed' clears the sender; 'unpaid' keeps them blocked.
+create or replace function public.direct_resolve_dispute(p_order_id uuid, p_outcome text, p_note text default null)
+returns public.direct_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.direct_orders;
+begin
+  if not public.kyc_is_admin() then
+    raise exception 'NOT_ALLOWED';
+  end if;
+  if p_outcome is null or p_outcome not in ('completed', 'unpaid') then
+    raise exception 'INVALID_OUTCOME';
+  end if;
+  update public.direct_orders
+    set status = p_outcome,
+        resolution_note = nullif(left(trim(coalesce(p_note, '')), 300), ''),
+        completed_at = case when p_outcome = 'completed' then now() else completed_at end,
+        closed_at = now()
+    where id = p_order_id and status in ('disputed', 'unpaid')
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- 13i. Chat
+create or replace function public.direct_send_message(p_order_id uuid, p_body text)
+returns public.direct_order_messages
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_body text := trim(coalesce(p_body, ''));
+  v_row public.direct_order_messages;
+begin
+  if not exists (select 1 from public.direct_orders
+                 where id = p_order_id and (sender_id = v_uid or partner_id = v_uid)) then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  if length(v_body) < 1 or length(v_body) > 500 then
+    raise exception 'INVALID_MESSAGE';
+  end if;
+  if (select count(*) from public.direct_order_messages
+      where author_id = v_uid and created_at > now() - interval '1 minute') >= 20 then
+    raise exception 'TOO_MANY_MESSAGES';
+  end if;
+  insert into public.direct_order_messages (order_id, author_id, body)
+  values (p_order_id, v_uid, v_body)
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+
+-- 13j. Who may call what
+do $$
+declare
+  f text;
+begin
+  foreach f in array array[
+    'public.partner_set_payout_account(text, text, text)',
+    'public.partner_remove_payout_account(text)',
+    'public.direct_find_partners(double precision, double precision)',
+    'public.direct_create_order(uuid, numeric, text, text, text, text, double precision, double precision)',
+    'public.direct_accept_order(uuid)',
+    'public.direct_decline_order(uuid)',
+    'public.direct_cancel_order(uuid)',
+    'public.direct_confirm_delivery(uuid, text)',
+    'public.direct_mark_paid(uuid, text)',
+    'public.direct_confirm_payment(uuid)',
+    'public.direct_report_unpaid(uuid)',
+    'public.direct_resolve_dispute(uuid, text, text)',
+    'public.direct_send_message(uuid, text)'
+  ] loop
+    execute format('revoke execute on function %s from public, anon', f);
+    execute format('grant execute on function %s to authenticated', f);
+  end loop;
+end $$;
+
+-- 13k. Live updates for orders and chat
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['direct_orders', 'direct_order_messages'] loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
 end $$;
