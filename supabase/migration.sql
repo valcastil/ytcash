@@ -1449,3 +1449,495 @@ begin
     grant execute on function public.kyc_didit_apply_status(text, text) to service_role;
   end if;
 end $$;
+
+-- ============================================================
+-- 12. Foreign-currency quotes and withdrawals
+--   * A sender abroad gets a quote (e.g. AED -> PHP) with a rate and fee
+--     that are fixed on the server for a few minutes, then pays for a P2P
+--     cash delivery with it.
+--   * Anyone with a wallet balance (typically a cash partner) can ask to
+--     withdraw it to GCash, Maya or a bank; a reviewer pays it out and
+--     marks it paid, or rejects it and the money returns to the wallet.
+-- ============================================================
+
+-- 12a. Pricing (server-side only). Edit this row to change what customers pay.
+create table if not exists public.fx_settings (
+  id boolean primary key default true check (id),
+  -- Taken off the market rate: customer rate = market rate x (1 - margin).
+  margin numeric(5,4) not null default 0.0100 check (margin >= 0 and margin < 0.5),
+  -- Transfer fee as a share of the amount converted, with a floor.
+  fee_pct numeric(5,4) not null default 0.0150 check (fee_pct >= 0 and fee_pct < 0.5),
+  min_fee_php numeric(12,2) not null default 50 check (min_fee_php >= 0),
+  -- How long a quoted rate is held.
+  quote_ttl_seconds integer not null default 600 check (quote_ttl_seconds between 30 and 3600),
+  -- Quotes stop if the market rate has not been refreshed for this long.
+  max_rate_age_hours integer not null default 168,
+  currencies text[] not null default '{AED,USD,EUR}'
+);
+insert into public.fx_settings (id) values (true) on conflict (id) do nothing;
+alter table public.fx_settings enable row level security;
+revoke all on public.fx_settings from anon, authenticated;
+
+-- 12b. Quotes
+create table if not exists public.fx_quotes (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references public.users(id) on delete cascade not null,
+  from_currency text not null,
+  -- PHP per 1 unit of from_currency: the market rate and the rate the customer gets.
+  mid_rate numeric(14,6) not null,
+  rate numeric(14,6) not null,
+  -- All three in from_currency: pay_amount = send_amount + fee_amount.
+  send_amount numeric(12,2) not null,
+  fee_amount numeric(12,2) not null,
+  pay_amount numeric(12,2) not null,
+  -- What the receiver gets, in PHP.
+  receive_amount numeric(12,2) not null,
+  rate_as_of timestamptz not null,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  used_at timestamptz
+);
+create index if not exists idx_fx_quotes_user on public.fx_quotes(user_id, created_at desc);
+
+alter table public.fx_quotes enable row level security;
+revoke all on public.fx_quotes from anon, authenticated;
+grant select on public.fx_quotes to authenticated;
+
+drop policy if exists "Users can view own quotes" on public.fx_quotes;
+create policy "Users can view own quotes"
+  on public.fx_quotes for select
+  using (auth.uid() = user_id);
+
+alter table public.p2p_orders add column if not exists quote_id uuid references public.fx_quotes(id);
+alter table public.p2p_orders add column if not exists pay_currency text;
+alter table public.p2p_orders add column if not exists pay_amount numeric(12,2);
+alter table public.p2p_orders add column if not exists fee_amount numeric(12,2);
+alter table public.p2p_orders add column if not exists fx_rate numeric(14,6);
+
+-- Server-side refresh of a market rate (called by the `fx-rates` Edge Function).
+-- A new value far from the current one is refused, so a bad feed cannot move prices.
+create or replace function public.fx_set_reference_rate(p_currency text, p_php_per_unit numeric)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_current numeric;
+begin
+  select php_per_unit into v_current from public.wallet_fx_reference where currency = upper(p_currency);
+  if not found or p_currency = 'PHP' or p_php_per_unit is null or p_php_per_unit <= 0 then
+    return false;
+  end if;
+  if abs(p_php_per_unit - v_current) > v_current * 0.30 then
+    return false;
+  end if;
+  update public.wallet_fx_reference
+    set php_per_unit = round(p_php_per_unit, 4), updated_at = now()
+    where currency = upper(p_currency);
+  return true;
+end;
+$$;
+
+-- Customer: ask for a quote.
+--   p_side = 'pay'     -> p_amount is what the sender pays in total (fee included)
+--   p_side = 'receive' -> p_amount is what the receiver should get in PHP
+create or replace function public.fx_request_quote(p_from_currency text, p_side text, p_amount numeric)
+returns public.fx_quotes
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_settings public.fx_settings;
+  v_ref public.wallet_fx_reference;
+  v_currency text := upper(coalesce(p_from_currency, ''));
+  v_rate numeric;
+  v_min_fee numeric;
+  v_send numeric;
+  v_fee numeric;
+  v_pay numeric;
+  v_receive numeric;
+  v_quote public.fx_quotes;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  select * into v_settings from public.fx_settings;
+  if v_currency = 'PHP' or not (v_currency = any (v_settings.currencies)) then
+    raise exception 'CURRENCY_NOT_SUPPORTED';
+  end if;
+  select * into v_ref from public.wallet_fx_reference where currency = v_currency;
+  if not found or v_ref.updated_at < now() - make_interval(hours => v_settings.max_rate_age_hours) then
+    raise exception 'RATE_UNAVAILABLE';
+  end if;
+  if p_amount is null or p_amount <= 0 or p_side is null or p_side not in ('pay', 'receive') then
+    raise exception 'INVALID_AMOUNT';
+  end if;
+  if (select count(*) from public.fx_quotes
+      where user_id = v_uid and created_at > now() - interval '1 hour') >= 200 then
+    raise exception 'TOO_MANY_QUOTES';
+  end if;
+
+  v_rate := round(v_ref.php_per_unit * (1 - v_settings.margin), 4);
+  v_min_fee := round(v_settings.min_fee_php / v_rate, 2);
+
+  if p_side = 'pay' then
+    v_pay := round(p_amount, 2);
+    v_send := v_pay / (1 + v_settings.fee_pct);
+    if v_send * v_settings.fee_pct < v_min_fee then
+      v_send := v_pay - v_min_fee;
+    end if;
+    v_send := round(v_send, 2);
+    v_fee := v_pay - v_send;
+    -- Round the payout down so the receiver is never promised more than was converted.
+    v_receive := floor(v_send * v_rate * 100) / 100;
+  else
+    v_receive := round(p_amount, 2);
+    -- Round the charge up so the converted amount always covers the payout.
+    v_send := ceil(v_receive / v_rate * 100) / 100;
+    v_fee := greatest(round(v_send * v_settings.fee_pct, 2), v_min_fee);
+    v_pay := v_send + v_fee;
+  end if;
+
+  if v_send <= 0 or v_receive < 100 or v_receive > 50000 then
+    raise exception 'AMOUNT_OUT_OF_RANGE';
+  end if;
+
+  -- Old unused quotes are of no use to anyone.
+  delete from public.fx_quotes
+    where user_id = v_uid and used_at is null and expires_at < now() - interval '1 hour';
+
+  insert into public.fx_quotes
+    (user_id, from_currency, mid_rate, rate, send_amount, fee_amount, pay_amount, receive_amount, rate_as_of, expires_at)
+  values
+    (v_uid, v_currency, v_ref.php_per_unit, v_rate, v_send, v_fee, v_pay, v_receive, v_ref.updated_at,
+     now() + make_interval(secs => v_settings.quote_ttl_seconds))
+  returning * into v_quote;
+  return v_quote;
+end;
+$$;
+
+-- Customer: pay for a P2P cash delivery with a quote.
+-- The foreign-currency payment is SIMULATED for now (no card is charged), exactly
+-- like Add Money, and is subject to the same switch and daily limit. When a real
+-- payment provider is added, this is the step that must wait for its confirmation.
+create or replace function public.p2p_create_order_from_quote(
+  p_quote_id uuid,
+  p_receiver_name text,
+  p_receiver_phone text,
+  p_receiver_address text,
+  p_lat double precision,
+  p_lng double precision
+)
+returns public.p2p_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_quote public.fx_quotes;
+  v_settings public.wallet_settings;
+  v_today numeric;
+  v_order public.p2p_orders;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  select * into v_quote from public.fx_quotes
+    where id = p_quote_id and user_id = v_uid
+    for update;
+  if not found then
+    raise exception 'QUOTE_NOT_FOUND';
+  end if;
+  if v_quote.used_at is not null then
+    raise exception 'QUOTE_USED';
+  end if;
+  if v_quote.expires_at < now() then
+    raise exception 'QUOTE_EXPIRED';
+  end if;
+
+  select * into v_settings from public.wallet_settings;
+  if not v_settings.demo_deposits_enabled then
+    raise exception 'PAYMENTS_UNAVAILABLE';
+  end if;
+
+  perform 1 from public.users where id = v_uid for update;
+  if not found then
+    raise exception 'PROFILE_MISSING';
+  end if;
+  select coalesce(sum(amount), 0) into v_today from public.transactions
+    where to_user = v_uid and type = 'add' and status = 'completed'
+      and created_at > now() - interval '24 hours';
+  if v_today + v_quote.receive_amount > v_settings.deposit_daily_limit then
+    raise exception 'DAILY_LIMIT_REACHED';
+  end if;
+
+  -- 1. The (simulated) payment funds the wallet with the converted amount.
+  update public.users set balance = balance + v_quote.receive_amount where id = v_uid;
+  insert into public.transactions
+    (from_user, to_user, amount, currency, converted_amount, converted_currency, type, status, note)
+  values
+    (null, v_uid, v_quote.receive_amount, 'PHP', v_quote.receive_amount, 'PHP', 'add', 'completed',
+     format('Paid %s %s (fee %s) at %s', v_quote.from_currency,
+            trim(to_char(v_quote.pay_amount, 'FM999999990.00')),
+            trim(to_char(v_quote.fee_amount, 'FM999999990.00')),
+            trim(to_char(v_quote.rate, 'FM999990.0000'))));
+
+  -- 2. The usual order: KYC check, nearest partner, escrow. Any failure undoes step 1.
+  v_order := public.p2p_create_order(
+    v_quote.receive_amount, p_receiver_name, p_receiver_phone, p_receiver_address, p_lat, p_lng);
+
+  update public.fx_quotes set used_at = now() where id = v_quote.id;
+  update public.p2p_orders
+    set quote_id = v_quote.id,
+        pay_currency = v_quote.from_currency,
+        pay_amount = v_quote.pay_amount,
+        fee_amount = v_quote.fee_amount,
+        fx_rate = v_quote.rate
+    where id = v_order.id
+    returning * into v_order;
+  return v_order;
+end;
+$$;
+
+-- 12c. Withdrawals
+alter table public.wallet_settings add column if not exists withdrawals_enabled boolean not null default true;
+alter table public.wallet_settings add column if not exists withdrawals_require_kyc boolean not null default true;
+alter table public.wallet_settings add column if not exists withdraw_min numeric(12,2) not null default 100;
+alter table public.wallet_settings add column if not exists withdraw_max numeric(12,2) not null default 50000;
+alter table public.wallet_settings add column if not exists withdraw_daily_limit numeric(12,2) not null default 100000;
+-- Flat fee per withdrawal, in PHP, taken on top of the amount requested.
+alter table public.wallet_settings add column if not exists withdraw_fee numeric(12,2) not null default 0;
+
+create table if not exists public.withdrawal_requests (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references public.users(id) on delete cascade not null,
+  user_name text not null default '',
+  -- What the user receives, and the fee charged on top. Both in PHP.
+  amount numeric(12,2) not null check (amount > 0),
+  fee numeric(12,2) not null default 0 check (fee >= 0),
+  method text not null check (method in ('gcash', 'maya', 'bank')),
+  account_name text not null,
+  account_number text not null,
+  bank_name text,
+  status text not null default 'pending' check (status in ('pending', 'paid', 'rejected', 'cancelled')),
+  -- The reference of the transfer you made, shown to the user as proof.
+  payout_reference text,
+  -- Shown to the user when rejected.
+  admin_note text,
+  reviewed_by uuid references public.users(id),
+  transaction_id uuid references public.transactions(id),
+  created_at timestamptz not null default now(),
+  decided_at timestamptz
+);
+create index if not exists idx_withdrawals_user on public.withdrawal_requests(user_id, created_at desc);
+create index if not exists idx_withdrawals_queue on public.withdrawal_requests(created_at) where status = 'pending';
+
+alter table public.withdrawal_requests enable row level security;
+revoke all on public.withdrawal_requests from anon, authenticated;
+grant select on public.withdrawal_requests to authenticated;
+
+drop policy if exists "Users can view own withdrawals" on public.withdrawal_requests;
+drop policy if exists "Reviewers can view all withdrawals" on public.withdrawal_requests;
+
+create policy "Users can view own withdrawals"
+  on public.withdrawal_requests for select
+  using (auth.uid() = user_id);
+
+-- The same people who review identity documents (kyc_admins) pay out withdrawals.
+create policy "Reviewers can view all withdrawals"
+  on public.withdrawal_requests for select
+  using (public.kyc_is_admin());
+
+-- User: ask for a withdrawal. The amount (plus fee) leaves the wallet immediately and is held.
+create or replace function public.wallet_request_withdrawal(
+  p_amount numeric,
+  p_method text,
+  p_account_name text,
+  p_account_number text,
+  p_bank_name text default null
+)
+returns public.withdrawal_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_amount numeric(12,2) := round(p_amount, 2);
+  v_settings public.wallet_settings;
+  v_user public.users;
+  v_account text := regexp_replace(coalesce(p_account_number, ''), '[\s-]', '', 'g');
+  v_today numeric;
+  v_total numeric(12,2);
+  v_tx_id uuid;
+  v_row public.withdrawal_requests;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  select * into v_settings from public.wallet_settings;
+  if not v_settings.withdrawals_enabled then
+    raise exception 'WITHDRAWALS_DISABLED';
+  end if;
+
+  select * into v_user from public.users where id = v_uid for update;
+  if not found then
+    raise exception 'PROFILE_MISSING';
+  end if;
+  if v_settings.withdrawals_require_kyc and not v_user.kyc_verified then
+    raise exception 'KYC_REQUIRED';
+  end if;
+
+  if v_amount is null or v_amount < v_settings.withdraw_min or v_amount > v_settings.withdraw_max then
+    raise exception 'INVALID_AMOUNT';
+  end if;
+  if p_method is null or p_method not in ('gcash', 'maya', 'bank')
+     or length(trim(coalesce(p_account_name, ''))) < 2
+     or v_account !~ '^\+?[0-9]{7,20}$'
+     or (p_method = 'bank' and length(trim(coalesce(p_bank_name, ''))) < 2) then
+    raise exception 'INVALID_ACCOUNT';
+  end if;
+
+  if (select count(*) from public.withdrawal_requests where user_id = v_uid and status = 'pending') >= 3 then
+    raise exception 'TOO_MANY_PENDING';
+  end if;
+  select coalesce(sum(amount), 0) into v_today from public.withdrawal_requests
+    where user_id = v_uid and status in ('pending', 'paid') and created_at > now() - interval '24 hours';
+  if v_today + v_amount > v_settings.withdraw_daily_limit then
+    raise exception 'DAILY_LIMIT_REACHED';
+  end if;
+
+  v_total := v_amount + v_settings.withdraw_fee;
+  if v_user.balance < v_total then
+    raise exception 'INSUFFICIENT_BALANCE';
+  end if;
+  update public.users set balance = balance - v_total where id = v_uid;
+
+  insert into public.transactions
+    (from_user, to_user, amount, currency, converted_amount, converted_currency, type, status, note)
+  values
+    (v_uid, null, v_total, 'PHP', v_total, 'PHP', 'withdraw', 'pending',
+     'Withdrawal to ' || case p_method when 'gcash' then 'GCash' when 'maya' then 'Maya' else left(trim(p_bank_name), 40) end
+       || ' ••••' || right(v_account, 4))
+  returning id into v_tx_id;
+
+  insert into public.withdrawal_requests
+    (user_id, user_name, amount, fee, method, account_name, account_number, bank_name, transaction_id)
+  values
+    (v_uid, coalesce(nullif(trim(v_user.full_name), ''), 'YTCash user'), v_amount, v_settings.withdraw_fee,
+     p_method, left(trim(p_account_name), 80), v_account,
+     case when p_method = 'bank' then left(trim(p_bank_name), 60) else null end, v_tx_id)
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+
+-- Internal: give a held withdrawal back to the wallet
+create or replace function public.wallet_refund_withdrawal(p_row public.withdrawal_requests, p_status text, p_note text, p_reviewer uuid)
+returns public.withdrawal_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.withdrawal_requests;
+begin
+  update public.users set balance = balance + p_row.amount + p_row.fee where id = p_row.user_id;
+  update public.transactions set status = 'failed' where id = p_row.transaction_id;
+  update public.withdrawal_requests
+    set status = p_status, admin_note = p_note, reviewed_by = p_reviewer, decided_at = now()
+    where id = p_row.id
+    returning * into v_row;
+  return v_row;
+end;
+$$;
+
+-- User: cancel a withdrawal that has not been handled yet
+create or replace function public.wallet_cancel_withdrawal(p_id uuid)
+returns public.withdrawal_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.withdrawal_requests;
+begin
+  select * into v_row from public.withdrawal_requests
+    where id = p_id and user_id = auth.uid() and status = 'pending'
+    for update;
+  if not found then
+    raise exception 'WITHDRAWAL_NOT_OPEN';
+  end if;
+  return public.wallet_refund_withdrawal(v_row, 'cancelled', null, null);
+end;
+$$;
+
+-- Reviewer: mark as paid (after sending the money) or reject (money returns to the wallet)
+create or replace function public.wallet_review_withdrawal(
+  p_id uuid, p_paid boolean, p_reference text default null, p_note text default null
+)
+returns public.withdrawal_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.withdrawal_requests;
+begin
+  if not public.kyc_is_admin() then
+    raise exception 'NOT_ALLOWED';
+  end if;
+  select * into v_row from public.withdrawal_requests
+    where id = p_id and status = 'pending'
+    for update;
+  if not found then
+    raise exception 'WITHDRAWAL_NOT_OPEN';
+  end if;
+
+  if p_paid then
+    if length(trim(coalesce(p_reference, ''))) < 3 then
+      raise exception 'REFERENCE_REQUIRED';
+    end if;
+    update public.transactions set status = 'completed' where id = v_row.transaction_id;
+    update public.withdrawal_requests
+      set status = 'paid', payout_reference = left(trim(p_reference), 60),
+          reviewed_by = auth.uid(), decided_at = now()
+      where id = v_row.id
+      returning * into v_row;
+    return v_row;
+  end if;
+
+  if length(trim(coalesce(p_note, ''))) < 5 then
+    raise exception 'REASON_REQUIRED';
+  end if;
+  return public.wallet_refund_withdrawal(v_row, 'rejected', left(trim(p_note), 300), auth.uid());
+end;
+$$;
+
+-- 12d. Who may call what
+revoke execute on function public.fx_set_reference_rate(text, numeric) from public, anon, authenticated;
+revoke execute on function public.wallet_refund_withdrawal(public.withdrawal_requests, text, text, uuid) from public, anon, authenticated;
+
+revoke execute on function public.fx_request_quote(text, text, numeric) from public, anon;
+revoke execute on function public.p2p_create_order_from_quote(uuid, text, text, text, double precision, double precision) from public, anon;
+revoke execute on function public.wallet_request_withdrawal(numeric, text, text, text, text) from public, anon;
+revoke execute on function public.wallet_cancel_withdrawal(uuid) from public, anon;
+revoke execute on function public.wallet_review_withdrawal(uuid, boolean, text, text) from public, anon;
+
+grant execute on function public.fx_request_quote(text, text, numeric) to authenticated;
+grant execute on function public.p2p_create_order_from_quote(uuid, text, text, text, double precision, double precision) to authenticated;
+grant execute on function public.wallet_request_withdrawal(numeric, text, text, text, text) to authenticated;
+grant execute on function public.wallet_cancel_withdrawal(uuid) to authenticated;
+grant execute on function public.wallet_review_withdrawal(uuid, boolean, text, text) to authenticated;
+
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant execute on function public.fx_set_reference_rate(text, numeric) to service_role;
+    grant select on public.wallet_fx_reference to service_role;
+  end if;
+end $$;

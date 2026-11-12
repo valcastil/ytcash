@@ -34,6 +34,11 @@ export interface P2POrder {
   completed_at: string | null;
   cancelled_at: string | null;
   expires_at: string;
+  /** Set when the order was paid for in a foreign currency with a quote. */
+  pay_currency: string | null;
+  pay_amount: number | null;
+  fee_amount: number | null;
+  fx_rate: number | null;
 }
 
 export interface P2PPartnerProfile {
@@ -62,7 +67,8 @@ export interface NewOrderInput {
 const ORDER_COLUMNS =
   'id, sender_id, partner_id, sender_name, partner_name, amount, currency, receiver_name, ' +
   'receiver_phone, receiver_address, receiver_lat, receiver_lng, distance_km, status, ' +
-  'cancel_reason, failed_code_attempts, created_at, accepted_at, completed_at, cancelled_at, expires_at';
+  'cancel_reason, failed_code_attempts, created_at, accepted_at, completed_at, cancelled_at, expires_at, ' +
+  'pay_currency, pay_amount, fee_amount, fx_rate';
 
 const ERROR_MESSAGES: Record<string, string> = {
   NOT_SIGNED_IN: 'Please sign in again to continue.',
@@ -72,6 +78,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   NO_PARTNER_NEARBY:
     'No cash partner is available near that address yet. Nothing was taken from your wallet.',
   INSUFFICIENT_BALANCE: 'Your wallet balance is too low for this amount.',
+  QUOTE_NOT_FOUND: 'That quote is no longer available. Get a new quote and try again.',
+  QUOTE_USED: 'That quote was already used. Get a new quote and try again.',
+  QUOTE_EXPIRED: 'The rate expired before you confirmed. Get a new quote and try again.',
+  PAYMENTS_UNAVAILABLE: 'Card payments are not available right now.',
+  DAILY_LIMIT_REACHED: "You have reached today's limit. Try again tomorrow.",
   ORDER_NOT_AVAILABLE: 'This order has changed and that action is no longer available.',
   ORDER_IN_PROGRESS:
     'A partner has accepted this order, so it can no longer be cancelled. You can cancel if it is not delivered within 24 hours.',
@@ -93,6 +104,10 @@ function toOrder(row: any): P2POrder {
     ...row,
     amount: Number(row.amount),
     distance_km: row.distance_km === null || row.distance_km === undefined ? null : Number(row.distance_km),
+    pay_currency: row.pay_currency ?? null,
+    pay_amount: row.pay_amount == null ? null : Number(row.pay_amount),
+    fee_amount: row.fee_amount == null ? null : Number(row.fee_amount),
+    fx_rate: row.fx_rate == null ? null : Number(row.fx_rate),
   };
 }
 
@@ -110,6 +125,24 @@ async function callOrderAction(fn: string, orderId: string): Promise<P2POrder> {
 export async function createP2POrder(input: NewOrderInput): Promise<P2POrder> {
   const { data, error } = await supabase.rpc('p2p_create_order', {
     p_amount: input.amount,
+    p_receiver_name: input.receiverName,
+    p_receiver_phone: input.receiverPhone,
+    p_receiver_address: input.receiverAddress,
+    p_lat: input.lat,
+    p_lng: input.lng,
+  });
+  if (error) throw error;
+  return toOrder(single(data));
+}
+
+export interface QuoteOrderInput extends Omit<NewOrderInput, 'amount'> {
+  quoteId: string;
+}
+
+/** Creates an order paid in a foreign currency at a quoted rate. */
+export async function createP2POrderFromQuote(input: QuoteOrderInput): Promise<P2POrder> {
+  const { data, error } = await supabase.rpc('p2p_create_order_from_quote', {
+    p_quote_id: input.quoteId,
     p_receiver_name: input.receiverName,
     p_receiver_phone: input.receiverPhone,
     p_receiver_address: input.receiverAddress,

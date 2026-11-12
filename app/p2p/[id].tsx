@@ -237,6 +237,14 @@ export default function P2POrderScreen() {
             <DetailRow icon="person-outline" value={order.receiver_name} />
             <DetailRow icon="call-outline" value={order.receiver_phone} />
             <DetailRow icon="location-outline" value={order.receiver_address} />
+            {order.pay_currency && order.pay_amount !== null && (
+              <DetailRow
+                icon="card-outline"
+                value={`You paid ${order.pay_currency} ${order.pay_amount.toFixed(2)}${
+                  order.fee_amount !== null ? ` (fee ${order.pay_currency} ${order.fee_amount.toFixed(2)})` : ''
+                }${order.fx_rate !== null ? ` at 1 ${order.pay_currency} = ₱${order.fx_rate.toFixed(4)}` : ''}`}
+              />
+            )}
             {order.status !== 'cancelled' && order.partner_name !== '' && (
               <DetailRow
                 icon="bicycle-outline"

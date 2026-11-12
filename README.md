@@ -12,6 +12,8 @@ A GCash-style digital wallet app for Filipinos with AI-powered multi-currency ca
 - **Secure Auth** — Email/password and phone OTP authentication via Supabase
 - **Identity Verification (KYC)** — ID scan, face match and liveness through Didit, with manual review as a fallback
 - **Fingerprint / Face ID Lock** — Unlocks the app and confirms sending or receiving money
+- **Send from Abroad** — Pay in AED, USD or EUR at a rate and fee held for 10 minutes
+- **Withdrawals** — Cash out wallet balance to GCash, Maya or a bank, paid out by a reviewer
 - **P2P Cash Delivery** — Send cash to anyone in the Philippines through the closest cash partner, with escrow
 - **Users Online Map** — Live map of signed-in users, with opt-in approximate location
 
@@ -74,6 +76,7 @@ app/
   online-map.tsx       Live map of users online
   p2p/                 P2P cash delivery (hub, new order, order detail)
   kyc/                 Identity verification, manual submission, admin review
+  withdraw/            Withdrawal request and payout review
 contexts/
   auth.tsx             Authentication context & provider
   presence.tsx         Who is online + location sharing choice
@@ -156,6 +159,27 @@ It is on by default when the phone has a fingerprint or face set up, falls back 
 ID photos and selfies for manual review go to the private `kyc-documents` storage bucket. Users can add files to their own folder only and cannot read them back; only reviewers can view them, through links that expire after 5 minutes. Decide how long you keep them and delete older files from the Supabase dashboard.
 
 Server tests: `deno test supabase/functions/_tests`.
+
+## Sending from Abroad (quotes)
+
+On **P2P Cash Delivery → New cash delivery**, choose what to pay in: AED, USD, EUR, or the PHP wallet. For a foreign currency, type either what you pay or what the receiver should get; the other side, the exchange rate and the fee are worked out on the server and held for 10 minutes.
+
+- **Rate:** the market rate less a margin (default 1%).
+- **Fee:** 1.5% of the amount converted, minimum ₱50, included in "You pay".
+- **Change pricing:** edit the single row in `fx_settings` (`margin`, `fee_pct`, `min_fee_php`, `quote_ttl_seconds`).
+- **Market rates:** deploy `supabase functions deploy fx-rates`. The app calls it before quoting and it refreshes the stored rates at most every 10 minutes. Without it, quotes use the rates stored in `wallet_fx_reference` and stop after 7 days without an update.
+
+**The foreign-currency payment is simulated.** No card is charged: confirming a quote credits the converted pesos and puts them straight into escrow, under the same switch (`wallet_settings.demo_deposits_enabled`) and daily limit as Add Money. `p2p_create_order_from_quote` is the function that must wait for a real payment confirmation once a payment provider is connected. Refunds of a cancelled order go to the sender's PHP wallet.
+
+## Withdrawals
+
+**Account → Withdraw to Bank or GCash** (also linked from the P2P Deliver tab). The user enters an amount (₱100 to ₱50,000) and a GCash, Maya or bank account. The amount leaves the wallet immediately and is held.
+
+Reviewers (the people in `kyc_admins`) see **Pay out withdrawals** on the same screen. Send the money yourself, then tap **Mark paid** and enter the transfer reference, which the user sees as proof. **Reject** needs a reason and returns the money to the wallet. A user can cancel while the request is still waiting.
+
+- Withdrawals require a verified identity by default (`wallet_settings.withdrawals_require_kyc`).
+- Limits and fee: `withdraw_min`, `withdraw_max`, `withdraw_daily_limit`, `withdraw_fee` (flat, default 0) in `wallet_settings`; `withdrawals_enabled` switches the feature off.
+- **Do not pay out real money while deposits are simulated.** Wallet balances can still be created by Add Money, Scan Cash and quote payments without any real funds, so a payout would be real money for an invented balance.
 
 ## Wallet Security
 
