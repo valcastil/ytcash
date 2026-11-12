@@ -2341,11 +2341,12 @@ grant execute on function public.p2p_direct_confirm_received(uuid) to authentica
 grant execute on function public.p2p_direct_report_unpaid(uuid) to authenticated;
 
 -- ============================================================
--- 13. Direct Pay (GCash, GoTyme, Maya)
+-- 13. Direct Pay (GCash, GoTyme, Maya, e& money)
 -- No money passes through YTCash here. The sender picks a nearby cash
 -- partner, the partner hands cash to the receiver, the receiver gives the
 -- partner an OTP code, and only then does the sender pay the partner
--- directly from their own GCash, GoTyme or Maya app.
+-- directly from their own GCash, GoTyme or Maya app (Philippines, in PHP) or
+-- e& money app (UAE, in AED).
 --
 -- The partner is paid AFTER handing over cash, so the partner carries the
 -- risk of a sender who does not pay. Senders with an unpaid delivery cannot
@@ -2355,7 +2356,8 @@ grant execute on function public.p2p_direct_report_unpaid(uuid) to authenticated
 -- 13a. Where a partner wants to be paid
 create table if not exists public.partner_payout_accounts (
   user_id uuid references public.users(id) on delete cascade not null,
-  method text not null check (method in ('gcash', 'gotyme', 'maya')),
+  -- gcash, gotyme, maya pay in PHP (Philippines); eandmoney pays in AED (UAE).
+  method text not null check (method in ('gcash', 'gotyme', 'maya', 'eandmoney')),
   account_name text not null,
   account_number text not null,
   updated_at timestamptz not null default now(),
@@ -2378,7 +2380,9 @@ create table if not exists public.direct_orders (
   sender_name text not null default '',
   partner_name text not null default '',
   amount numeric(12,2) not null check (amount > 0),
-  method text not null check (method in ('gcash', 'gotyme', 'maya')),
+  -- The currency of the cash handed over and of the payment; it follows the payment app.
+  currency text not null default 'PHP' check (currency in ('PHP', 'AED')),
+  method text not null check (method in ('gcash', 'gotyme', 'maya', 'eandmoney')),
   receiver_name text not null,
   receiver_phone text not null,
   receiver_address text not null,
@@ -2400,6 +2404,17 @@ create table if not exists public.direct_orders (
   completed_at timestamptz,
   closed_at timestamptz
 );
+-- Databases created before e& money was added: widen the allowed apps and add the currency.
+alter table public.direct_orders add column if not exists currency text not null default 'PHP';
+alter table public.direct_orders drop constraint if exists direct_orders_method_check;
+alter table public.direct_orders add constraint direct_orders_method_check
+  check (method in ('gcash', 'gotyme', 'maya', 'eandmoney'));
+alter table public.direct_orders drop constraint if exists direct_orders_currency_check;
+alter table public.direct_orders add constraint direct_orders_currency_check check (currency in ('PHP', 'AED'));
+alter table public.partner_payout_accounts drop constraint if exists partner_payout_accounts_method_check;
+alter table public.partner_payout_accounts add constraint partner_payout_accounts_method_check
+  check (method in ('gcash', 'gotyme', 'maya', 'eandmoney'));
+
 create index if not exists idx_direct_orders_sender on public.direct_orders(sender_id, created_at desc);
 create index if not exists idx_direct_orders_partner on public.direct_orders(partner_id, created_at desc);
 
@@ -2481,6 +2496,18 @@ create policy "Parties can read order messages"
     )
   );
 
+-- Which currency a payment app works in
+create or replace function public.direct_method_currency(p_method text)
+returns text
+language sql
+immutable
+as $$
+  select case
+    when p_method = 'eandmoney' then 'AED'
+    when p_method in ('gcash', 'gotyme', 'maya') then 'PHP'
+  end;
+$$;
+
 -- 13c. Partner: payout accounts
 create or replace function public.partner_set_payout_account(p_method text, p_account_name text, p_account_number text)
 returns public.partner_payout_accounts
@@ -2496,7 +2523,7 @@ begin
   if v_uid is null then
     raise exception 'NOT_SIGNED_IN';
   end if;
-  if p_method is null or p_method not in ('gcash', 'gotyme', 'maya')
+  if public.direct_method_currency(p_method) is null
      or length(trim(coalesce(p_account_name, ''))) < 2
      or v_number !~ '^\+?[0-9]{7,20}$' then
     raise exception 'INVALID_ACCOUNT';
@@ -2521,9 +2548,14 @@ as $$
 $$;
 
 -- 13d. Sender: who can deliver near this point?
--- Returns up to 5 available partners within 30 km, nearest first. Only a first
--- name, an area rounded to about 1 km, and which apps they accept are shared.
-create or replace function public.direct_find_partners(p_lat double precision, p_lng double precision)
+-- Returns up to 5 available partners within 30 km, nearest first, who accept a
+-- payment app in the requested currency (PHP: GCash, GoTyme, Maya; AED: e& money).
+-- Only a first name, an area rounded to about 1 km, and those apps are shared.
+drop function if exists public.direct_find_partners(double precision, double precision);
+
+create or replace function public.direct_find_partners(
+  p_lat double precision, p_lng double precision, p_currency text default 'PHP'
+)
 returns table (
   partner_id uuid,
   name text,
@@ -2544,7 +2576,8 @@ as $$
     round(p.lat::numeric, 2)::double precision,
     round(p.lng::numeric, 2)::double precision,
     public.p2p_distance_km(p_lat, p_lng, p.lat, p.lng) as km,
-    (select array_agg(a.method order by a.method) from public.partner_payout_accounts a where a.user_id = p.user_id),
+    (select array_agg(a.method order by a.method) from public.partner_payout_accounts a
+      where a.user_id = p.user_id and public.direct_method_currency(a.method) = upper(p_currency)),
     (select count(*)::integer from public.direct_orders o where o.partner_id = p.user_id and o.status = 'completed')
   from public.p2p_partners p
   join public.users u on u.id = p.user_id
@@ -2552,7 +2585,8 @@ as $$
     and p_lat between -90 and 90 and p_lng between -180 and 180
     and p.is_available
     and p.user_id <> auth.uid()
-    and exists (select 1 from public.partner_payout_accounts a where a.user_id = p.user_id)
+    and exists (select 1 from public.partner_payout_accounts a
+                where a.user_id = p.user_id and public.direct_method_currency(a.method) = upper(p_currency))
     and public.p2p_distance_km(p_lat, p_lng, p.lat, p.lng) <= 30
   order by km asc, p.updated_at desc
   limit 5;
@@ -2580,6 +2614,7 @@ declare
   v_sender_name text;
   v_partner record;
   v_account public.partner_payout_accounts;
+  v_currency text := public.direct_method_currency(p_method);
   v_order public.direct_orders;
 begin
   if v_uid is null then
@@ -2606,7 +2641,13 @@ begin
     raise exception 'TOO_MANY_OPEN';
   end if;
 
-  if v_amount is null or v_amount < 100 or v_amount > 50000 then
+  if v_currency is null then
+    raise exception 'METHOD_NOT_ACCEPTED';
+  end if;
+  -- Per-delivery limits: PHP 100 to 50,000; AED 10 to 3,500.
+  if v_amount is null
+     or (v_currency = 'PHP' and (v_amount < 100 or v_amount > 50000))
+     or (v_currency = 'AED' and (v_amount < 10 or v_amount > 3500)) then
     raise exception 'INVALID_AMOUNT';
   end if;
   if length(trim(coalesce(p_receiver_name, ''))) < 2
@@ -2633,10 +2674,10 @@ begin
   end if;
 
   insert into public.direct_orders
-    (sender_id, partner_id, sender_name, partner_name, amount, method,
+    (sender_id, partner_id, sender_name, partner_name, amount, currency, method,
      receiver_name, receiver_phone, receiver_address, receiver_lat, receiver_lng, distance_km)
   values
-    (v_uid, p_partner_id, v_sender_name, v_partner.name, v_amount, p_method,
+    (v_uid, p_partner_id, v_sender_name, v_partner.name, v_amount, v_currency, p_method,
      left(trim(p_receiver_name), 80), left(trim(p_receiver_phone), 30),
      left(trim(p_receiver_address), 300), p_lat, p_lng, round(v_partner.km::numeric, 2))
   returning * into v_order;
@@ -2906,7 +2947,7 @@ begin
   foreach f in array array[
     'public.partner_set_payout_account(text, text, text)',
     'public.partner_remove_payout_account(text)',
-    'public.direct_find_partners(double precision, double precision)',
+    'public.direct_find_partners(double precision, double precision, text)',
     'public.direct_create_order(uuid, numeric, text, text, text, text, double precision, double precision)',
     'public.direct_accept_order(uuid)',
     'public.direct_decline_order(uuid)',

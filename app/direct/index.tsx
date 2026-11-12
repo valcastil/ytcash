@@ -17,16 +17,17 @@ import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { ScreenHeader } from '@/components/screen-header';
-import { formatCurrency } from '@/constants/currencies';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth';
 import {
   directErrorMessage,
   directStatusColor,
   directStatusLabel,
+  formatDirectAmount,
   isDirectOpen,
   listDirectOrders,
   listPayoutAccounts,
+  METHOD_CURRENCY,
   PAY_METHOD_LABEL,
   PAY_METHODS,
   removePayoutAccount,
@@ -44,7 +45,7 @@ const STEPS = [
   'Enter your friend’s address and pick the nearest partner on the map.',
   'Chat with the partner. They bring the cash to your friend.',
   'Your friend gives the partner the OTP code you sent them.',
-  'Only then do you pay the partner from your GCash, GoTyme or Maya.',
+  'Only then do you pay the partner from your GCash, GoTyme or Maya (Philippines) or e& money (UAE).',
 ];
 
 export default function DirectPayHubScreen() {
@@ -215,7 +216,10 @@ export default function DirectPayHubScreen() {
                     activeOpacity={0.8}
                     accessibilityRole="button">
                     <View style={styles.flex}>
-                      <Text style={styles.accountMethod}>{PAY_METHOD_LABEL[method]}</Text>
+                      <Text style={styles.accountMethod}>
+                        {PAY_METHOD_LABEL[method]}
+                        <Text style={styles.accountCurrency}>{`  ${METHOD_CURRENCY[method]}`}</Text>
+                      </Text>
                       <Text style={styles.accountDetail}>
                         {account ? `${account.account_name} · ${account.account_number}` : 'Not added'}
                       </Text>
@@ -238,7 +242,7 @@ export default function DirectPayHubScreen() {
                         style={[styles.input, styles.inputSpaced]}
                         value={accountNumber}
                         onChangeText={(t) => setAccountNumber(t.replace(/[^\d\s+-]/g, ''))}
-                        placeholder={method === 'gotyme' ? 'Account number' : '09XX XXX XXXX'}
+                        placeholder={method === 'gotyme' ? 'Account number' : method === 'eandmoney' ? '+971 5X XXX XXXX' : '09XX XXX XXXX'}
                         placeholderTextColor={BitcoinColors.textMuted}
                         keyboardType="number-pad"
                         maxLength={24}
@@ -314,7 +318,7 @@ export default function DirectPayHubScreen() {
                   </Text>
                 </View>
                 <View style={styles.rowRight}>
-                  <Text style={styles.rowAmount}>{formatCurrency(order.amount)}</Text>
+                  <Text style={styles.rowAmount}>{formatDirectAmount(order.amount, order.currency)}</Text>
                   <Text style={styles.rowMeta}>{PAY_METHOD_LABEL[order.method]}</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={BitcoinColors.textMuted} />
@@ -384,6 +388,7 @@ const styles = StyleSheet.create({
   accountBlock: { borderTopWidth: 1, borderTopColor: BitcoinColors.border },
   accountRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 12 },
   accountMethod: { fontSize: 14, fontWeight: '700', color: '#FFFFFF' },
+  accountCurrency: { fontSize: 11, fontWeight: '700', color: BitcoinColors.textMuted },
   accountDetail: { fontSize: 12, color: BitcoinColors.textSecondary, marginTop: 2 },
   accountAction: { fontSize: 12, fontWeight: '800', color: BitcoinColors.orange },
   accountForm: { paddingBottom: 14 },

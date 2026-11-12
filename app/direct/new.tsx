@@ -17,26 +17,25 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { PartnerMap } from '@/components/partner-map';
 import { ScreenHeader } from '@/components/screen-header';
-import { formatCurrency } from '@/constants/currencies';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import {
   createDirectOrder,
-  DIRECT_MAX_AMOUNT,
-  DIRECT_MIN_AMOUNT,
+  DIRECT_REGIONS,
   directErrorMessage,
   findNearbyPartners,
+  formatDirectAmount,
   formatKm,
   PAY_METHOD_LABEL,
+  type DirectRegion,
   type NearbyPartner,
   type PayMethod,
 } from '@/services/direct';
 import { searchAddress, type AddressMatch } from '@/services/geocoding';
 
-const QUICK_AMOUNTS = [500, 1000, 2000, 5000];
-
 export default function NewDirectOrderScreen() {
   const [step, setStep] = useState<'details' | 'partner'>('details');
 
+  const [region, setRegion] = useState<DirectRegion>(DIRECT_REGIONS[0]);
   const [amount, setAmount] = useState('');
   const [receiverName, setReceiverName] = useState('');
   const [receiverPhone, setReceiverPhone] = useState('');
@@ -53,6 +52,20 @@ export default function NewDirectOrderScreen() {
   const [submitting, setSubmitting] = useState(false);
 
   const numAmount = parseFloat(amount) || 0;
+  const money = (value: number) => formatDirectAmount(value, region.currency);
+
+  function selectRegion(next: DirectRegion) {
+    if (next.currency === region.currency) return;
+    setRegion(next);
+    // Amounts, addresses and partners belong to one country, so start those again.
+    setAmount('');
+    setPlace(null);
+    setMatches(null);
+    setSearchError(null);
+    setPartners([]);
+    setSelectedId(null);
+    setMethod(null);
+  }
   const selected = partners.find((p) => p.partner_id === selectedId) ?? null;
 
   const receiverPoint = useMemo(
@@ -81,16 +94,16 @@ export default function NewDirectOrderScreen() {
 
   async function handleFindAddress() {
     if (address.trim().length < 5) {
-      setSearchError('Enter the street, barangay and city.');
+      setSearchError('Enter the street, area and city.');
       return;
     }
     setSearching(true);
     setSearchError(null);
     setPlace(null);
     try {
-      const results = await searchAddress(address);
+      const results = await searchAddress(address, region.country);
       setMatches(results);
-      if (results.length === 0) setSearchError('No match found. Try adding the barangay, city or province.');
+      if (results.length === 0) setSearchError(`No match found in ${region.label}. Try adding the area or city.`);
     } catch (e: any) {
       setMatches(null);
       setSearchError(e?.message ?? 'Address search failed. Check your connection and try again.');
@@ -100,8 +113,8 @@ export default function NewDirectOrderScreen() {
   }
 
   function validateDetails(): string | null {
-    if (numAmount < DIRECT_MIN_AMOUNT || numAmount > DIRECT_MAX_AMOUNT) {
-      return `Enter an amount between ${formatCurrency(DIRECT_MIN_AMOUNT)} and ${formatCurrency(DIRECT_MAX_AMOUNT)}.`;
+    if (numAmount < region.min || numAmount > region.max) {
+      return `Enter an amount between ${money(region.min)} and ${money(region.max)}.`;
     }
     if (receiverName.trim().length < 2) return "Enter your friend's full name.";
     if (receiverPhone.replace(/[^\d]/g, '').length < 7) return "Enter your friend's mobile number.";
@@ -117,7 +130,7 @@ export default function NewDirectOrderScreen() {
     }
     setFinding(true);
     try {
-      const found = await findNearbyPartners(place.lat, place.lng);
+      const found = await findNearbyPartners(place.lat, place.lng, region.currency);
       setPartners(found);
       // The list is nearest first, so the first partner is the closest one.
       setSelectedId(found[0]?.partner_id ?? null);
@@ -159,9 +172,28 @@ export default function NewDirectOrderScreen() {
       {step === 'details' ? (
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.card}>
-            <Text style={styles.label}>CASH YOUR FRIEND GETS (PHP)</Text>
+            <Text style={styles.label}>DELIVER IN</Text>
+            <View style={styles.methods}>
+              {DIRECT_REGIONS.map((option) => {
+                const isSelected = option.currency === region.currency;
+                return (
+                  <TouchableOpacity
+                    key={option.currency}
+                    style={[styles.method, isSelected && styles.methodSelected]}
+                    onPress={() => selectRegion(option)}
+                    activeOpacity={0.8}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: isSelected }}>
+                    <Text style={[styles.methodText, isSelected && styles.methodTextSelected]}>{option.label}</Text>
+                    <Text style={styles.regionApps}>{option.apps}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={[styles.label, styles.labelSpaced]}>CASH YOUR FRIEND GETS ({region.currency})</Text>
             <View style={styles.amountBox}>
-              <Text style={styles.currencySymbol}>₱</Text>
+              <Text style={[styles.currencySymbol, region.symbol.length > 1 && styles.currencyCode]}>{region.symbol}</Text>
               <TextInput
                 style={styles.amountInput}
                 value={amount}
@@ -169,13 +201,16 @@ export default function NewDirectOrderScreen() {
                 placeholder="0.00"
                 placeholderTextColor={BitcoinColors.textMuted}
                 keyboardType="decimal-pad"
-                accessibilityLabel="Cash amount in pesos"
+                accessibilityLabel={`Cash amount in ${region.currency}`}
               />
             </View>
             <View style={styles.chipsRow}>
-              {QUICK_AMOUNTS.map((value) => (
+              {region.quickAmounts.map((value) => (
                 <TouchableOpacity key={value} style={styles.chip} onPress={() => setAmount(String(value))} activeOpacity={0.75}>
-                  <Text style={styles.chipText}>₱{value.toLocaleString()}</Text>
+                  <Text style={styles.chipText}>
+                    {region.symbol.length > 1 ? `${region.symbol} ` : region.symbol}
+                    {value.toLocaleString()}
+                  </Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -196,7 +231,7 @@ export default function NewDirectOrderScreen() {
               style={styles.input}
               value={receiverPhone}
               onChangeText={setReceiverPhone}
-              placeholder="+63 9XX XXX XXXX"
+              placeholder={region.phonePlaceholder}
               placeholderTextColor={BitcoinColors.textMuted}
               keyboardType="phone-pad"
               maxLength={30}
@@ -207,7 +242,7 @@ export default function NewDirectOrderScreen() {
               style={[styles.input, styles.inputMultiline]}
               value={address}
               onChangeText={onAddressChange}
-              placeholder="Street, barangay, city, province"
+              placeholder={region.addressPlaceholder}
               placeholderTextColor={BitcoinColors.textMuted}
               multiline
               maxLength={300}
@@ -275,7 +310,7 @@ export default function NewDirectOrderScreen() {
               <View style={styles.card}>
                 <Text style={styles.emptyTitle}>No partner near this address yet</Text>
                 <Text style={styles.emptyText}>
-                  Nobody within 30 km is accepting Direct Pay right now. Try again later or use a different address.
+                  Nobody within 30 km accepts {region.apps} right now. Try again later or use a different address.
                 </Text>
               </View>
             ) : (
@@ -339,11 +374,11 @@ export default function NewDirectOrderScreen() {
                       })}
                     </View>
                     <Text style={styles.noteText}>
-                      You pay {formatCurrency(numAmount)} to {selected.name} only after your friend has the cash and has
+                      You pay {money(numAmount)} to {selected.name} only after your friend has the cash and has
                       given them the OTP code. You can chat with {selected.name} as soon as the request is sent.
                     </Text>
                     <PrimaryButton
-                      label={submitting ? 'Sending…' : `Ask ${selected.name} to deliver ${formatCurrency(numAmount)}`}
+                      label={submitting ? 'Sending…' : `Ask ${selected.name} to deliver ${money(numAmount)}`}
                       busy={submitting}
                       onPress={handleSendRequest}
                     />
@@ -397,6 +432,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   currencySymbol: { fontSize: 24, fontWeight: '800', color: BitcoinColors.orange, marginRight: 6 },
+  currencyCode: { fontSize: 15, marginRight: 8 },
+  regionApps: { fontSize: 10, color: BitcoinColors.textMuted, marginTop: 2 },
   amountInput: { flex: 1, fontSize: 26, fontWeight: '800', color: '#FFFFFF', paddingVertical: 12 },
   chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   chip: {

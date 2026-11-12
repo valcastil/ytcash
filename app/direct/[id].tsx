@@ -17,7 +17,6 @@ import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { ScreenHeader } from '@/components/screen-header';
-import { formatCurrency } from '@/constants/currencies';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth';
 import { confirmWithBiometrics } from '@/services/biometrics';
@@ -31,6 +30,7 @@ import {
   directErrorMessage,
   directStatusColor,
   directStatusLabel,
+  formatDirectAmount,
   formatKm,
   getDirectCode,
   getDirectOrder,
@@ -165,7 +165,7 @@ export default function DirectOrderScreen() {
 
   const role: Role = order.sender_id === userId ? 'sender' : 'partner';
   const color = directStatusColor(order);
-  const amountText = formatCurrency(order.amount);
+  const amountText = formatDirectAmount(order.amount, order.currency);
   const app = PAY_METHOD_LABEL[order.method];
   const done = stepsDone(order);
   const locked = order.failed_code_attempts >= 5;

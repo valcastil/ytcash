@@ -2,17 +2,75 @@ import { BitcoinColors } from '@/constants/theme';
 import { supabase } from '@/services/supabase';
 
 // ─── Direct Pay ─────────────────────────────────────────
-// The sender pays the partner from their own GCash, GoTyme or Maya app after
+// The sender pays the partner from their own GCash, GoTyme, Maya or e& money app after
 // the cash has been handed over. No money passes through YTCash; the app finds
 // the partner, carries the OTP and the chat, and records who confirmed what.
 // Rules live in section 13 of supabase/migration.sql.
 
-export type PayMethod = 'gcash' | 'gotyme' | 'maya';
-export const PAY_METHODS: PayMethod[] = ['gcash', 'gotyme', 'maya'];
-export const PAY_METHOD_LABEL: Record<PayMethod, string> = { gcash: 'GCash', gotyme: 'GoTyme', maya: 'Maya' };
+export type PayMethod = 'gcash' | 'gotyme' | 'maya' | 'eandmoney';
+export const PAY_METHODS: PayMethod[] = ['gcash', 'gotyme', 'maya', 'eandmoney'];
+export const PAY_METHOD_LABEL: Record<PayMethod, string> = {
+  gcash: 'GCash',
+  gotyme: 'GoTyme',
+  maya: 'Maya',
+  eandmoney: 'e& money',
+};
 
-export const DIRECT_MIN_AMOUNT = 100;
-export const DIRECT_MAX_AMOUNT = 50000;
+/** The cash handed over and the payment are in the currency of the payment app. */
+export type DirectCurrency = 'PHP' | 'AED';
+export const METHOD_CURRENCY: Record<PayMethod, DirectCurrency> = {
+  gcash: 'PHP',
+  gotyme: 'PHP',
+  maya: 'PHP',
+  eandmoney: 'AED',
+};
+
+export interface DirectRegion {
+  currency: DirectCurrency;
+  label: string;
+  /** ISO country code used for the address search. */
+  country: string;
+  symbol: string;
+  min: number;
+  max: number;
+  quickAmounts: number[];
+  phonePlaceholder: string;
+  addressPlaceholder: string;
+  apps: string;
+}
+
+/** Where the cash is delivered. Limits match the server (section 13 of the migration). */
+export const DIRECT_REGIONS: DirectRegion[] = [
+  {
+    currency: 'PHP',
+    label: 'Philippines',
+    country: 'ph',
+    symbol: '₱',
+    min: 100,
+    max: 50000,
+    quickAmounts: [500, 1000, 2000, 5000],
+    phonePlaceholder: '+63 9XX XXX XXXX',
+    addressPlaceholder: 'Street, barangay, city, province',
+    apps: 'GCash, GoTyme or Maya',
+  },
+  {
+    currency: 'AED',
+    label: 'UAE',
+    country: 'ae',
+    symbol: 'AED',
+    min: 10,
+    max: 3500,
+    quickAmounts: [50, 100, 200, 500],
+    phonePlaceholder: '+971 5X XXX XXXX',
+    addressPlaceholder: 'Building, street, area, emirate',
+    apps: 'e& money',
+  },
+];
+
+export function formatDirectAmount(amount: number, currency: DirectCurrency = 'PHP'): string {
+  const number = amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return currency === 'AED' ? `AED ${number}` : `₱${number}`;
+}
 export const DIRECT_CODE_LENGTH = 6;
 
 export type DirectStatus =
@@ -33,6 +91,7 @@ export interface DirectOrder {
   sender_name: string;
   partner_name: string;
   amount: number;
+  currency: DirectCurrency;
   method: PayMethod;
   receiver_name: string;
   receiver_phone: string;
@@ -85,7 +144,7 @@ export interface DirectOrderInput {
 }
 
 const ORDER_COLUMNS =
-  'id, sender_id, partner_id, sender_name, partner_name, amount, method, receiver_name, receiver_phone, ' +
+  'id, sender_id, partner_id, sender_name, partner_name, amount, currency, method, receiver_name, receiver_phone, ' +
   'receiver_address, receiver_lat, receiver_lng, distance_km, status, payment_reference, resolution_note, ' +
   'failed_code_attempts, created_at, delivered_at, paid_at';
 
@@ -95,7 +154,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   BLOCKED_UNPAID: 'A partner reported that you have not paid for a delivery. Pay that one first to continue.',
   PAY_PREVIOUS_FIRST: 'You have a delivery waiting for payment. Pay the partner before starting another.',
   TOO_MANY_OPEN: 'You already have 3 open requests. Cancel one or wait for a partner to respond.',
-  INVALID_AMOUNT: `Enter an amount between ₱${DIRECT_MIN_AMOUNT.toLocaleString()} and ₱${DIRECT_MAX_AMOUNT.toLocaleString()}.`,
+  INVALID_AMOUNT: 'That amount is outside the allowed range for one delivery.',
   INVALID_RECEIVER: "Check the receiver's name, phone number and address.",
   PARTNER_NOT_AVAILABLE: 'That partner is no longer available. Choose another one.',
   METHOD_NOT_ACCEPTED: 'That partner does not accept this payment app. Choose another app or partner.',
@@ -121,6 +180,7 @@ function toOrder(row: any): DirectOrder {
   return {
     ...row,
     amount: Number(row.amount),
+    currency: row.currency === 'AED' ? 'AED' : 'PHP',
     distance_km: row.distance_km == null ? null : Number(row.distance_km),
   };
 }
@@ -136,8 +196,17 @@ async function orderAction(fn: string, args: Record<string, unknown>): Promise<D
 }
 
 // ─── Finding a partner ──────────────────────────────────
-export async function findNearbyPartners(lat: number, lng: number): Promise<NearbyPartner[]> {
-  const { data, error } = await supabase.rpc('direct_find_partners', { p_lat: lat, p_lng: lng });
+/** Partners near a point who accept a payment app in the given currency. */
+export async function findNearbyPartners(
+  lat: number,
+  lng: number,
+  currency: DirectCurrency = 'PHP',
+): Promise<NearbyPartner[]> {
+  const { data, error } = await supabase.rpc('direct_find_partners', {
+    p_lat: lat,
+    p_lng: lng,
+    p_currency: currency,
+  });
   if (error) throw error;
   return (data ?? []).map((row: any) => ({
     partner_id: row.partner_id,
