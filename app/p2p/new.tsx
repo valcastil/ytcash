@@ -19,13 +19,14 @@ import { ScreenHeader } from '@/components/screen-header';
 import { formatCurrency } from '@/constants/currencies';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth';
+import { confirmWithBiometrics } from '@/services/biometrics';
 import { searchAddress, type AddressMatch } from '@/services/geocoding';
 import { createP2POrder, P2P_MAX_AMOUNT, P2P_MIN_AMOUNT, p2pErrorMessage } from '@/services/p2p';
 
 const QUICK_AMOUNTS = [500, 1000, 2000, 5000];
 
 export default function NewP2POrderScreen() {
-  const { profile, refreshProfile } = useAuth();
+  const { user, profile, refreshProfile } = useAuth();
   const balance = profile?.balance ?? 0;
 
   const [amount, setAmount] = useState('');
@@ -93,6 +94,7 @@ export default function NewP2POrderScreen() {
 
   async function handleConfirm() {
     if (!place || submitting) return;
+    if (!(await confirmWithBiometrics(user?.id, `Confirm sending ${formatCurrency(numAmount)}`))) return;
     setSubmitting(true);
     try {
       const order = await createP2POrder({

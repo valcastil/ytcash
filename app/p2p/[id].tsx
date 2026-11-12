@@ -21,6 +21,7 @@ import { ScreenHeader } from '@/components/screen-header';
 import { formatCurrency } from '@/constants/currencies';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth';
+import { confirmWithBiometrics } from '@/services/biometrics';
 import {
   acceptP2POrder,
   cancelP2POrder,
@@ -139,6 +140,7 @@ export default function P2POrderScreen() {
       return;
     }
     setCodeError(null);
+    if (!(await confirmWithBiometrics(userId, `Confirm receiving ${amountText}`))) return;
     await run(async () => {
       const result = await completeP2POrder(order.id, code);
       if (!result.ok) {
@@ -318,7 +320,11 @@ export default function P2POrderScreen() {
                 `Only do this once ${order.receiver_name} confirms they have the cash. ${amountText} goes to ${order.partner_name} and cannot be taken back.`,
                 'Release',
                 false,
-                () => run(() => releaseP2POrder(order.id), 'Could not release'),
+                async () => {
+                  if (await confirmWithBiometrics(userId, `Confirm releasing ${amountText}`)) {
+                    run(() => releaseP2POrder(order.id), 'Could not release');
+                  }
+                },
               )
             }
           />

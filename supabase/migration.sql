@@ -399,6 +399,7 @@ begin
   if v_uid is null then
     raise exception 'NOT_SIGNED_IN';
   end if;
+  perform public.kyc_require('p2p');
   if v_amount is null or v_amount < 100 or v_amount > 50000 then
     raise exception 'INVALID_AMOUNT';
   end if;
@@ -463,6 +464,7 @@ as $$
 declare
   v_order public.p2p_orders;
 begin
+  perform public.kyc_require('p2p');
   update public.p2p_orders
     set status = 'accepted', accepted_at = now()
     where id = p_order_id and partner_id = auth.uid() and status = 'matched'
@@ -772,6 +774,7 @@ begin
   if v_uid is null then
     raise exception 'NOT_SIGNED_IN';
   end if;
+  perform public.kyc_require('send');
   select send_max into v_max from public.wallet_settings;
   if v_amount is null or v_amount <= 0 or v_amount > v_max then
     raise exception 'INVALID_AMOUNT';
@@ -947,3 +950,502 @@ grant execute on function public.wallet_find_recipient(text) to authenticated;
 grant execute on function public.wallet_send(uuid, numeric, text) to authenticated;
 grant execute on function public.wallet_deposit(numeric, text) to authenticated;
 grant execute on function public.wallet_add_scanned_cash(jsonb) to authenticated;
+
+
+-- ============================================================
+-- 11. KYC (identity verification)
+-- Two ways to get verified, both ending in users.kyc_verified = true,
+-- which only the server can set:
+--   * Didit (automatic): ID document + face match + liveness. Sessions are
+--     created by the `kyc` Edge Function and results arrive on the signed
+--     `kyc-webhook` Edge Function.
+--   * Manual review: the user uploads ID photos and a selfie to a private
+--     bucket and a KYC admin approves or rejects in the app.
+-- ============================================================
+
+-- 11a. Settings (server-side only)
+create table if not exists public.kyc_settings (
+  id boolean primary key default true check (id),
+  -- 'auto'   : use Didit when it is configured and working, otherwise manual review
+  -- 'didit'  : Didit only (users see an error if it is unavailable)
+  -- 'manual' : manual review only (e.g. once the free Didit checks are used up)
+  provider_mode text not null default 'auto' check (provider_mode in ('auto', 'didit', 'manual')),
+  -- Protects the Didit quota: sessions one user may start per 24 hours.
+  didit_sessions_per_day integer not null default 3,
+  -- Features that need a verified identity. Empty = KYC is optional.
+  -- Supported values: 'p2p' (send or deliver cash), 'send' (wallet transfers).
+  required_for text[] not null default '{}'
+);
+insert into public.kyc_settings (id) values (true) on conflict (id) do nothing;
+alter table public.kyc_settings enable row level security;
+revoke all on public.kyc_settings from anon, authenticated;
+
+-- People allowed to review manual submissions. Add yourself in the SQL editor:
+--   insert into public.kyc_admins (user_id)
+--   select id from public.users where email = 'you@example.com';
+create table if not exists public.kyc_admins (
+  user_id uuid references public.users(id) on delete cascade primary key,
+  added_at timestamptz not null default now()
+);
+alter table public.kyc_admins enable row level security;
+revoke all on public.kyc_admins from anon, authenticated;
+
+create or replace function public.kyc_is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.kyc_admins where user_id = auth.uid());
+$$;
+
+-- 11b. Verification attempts
+create table if not exists public.kyc_verifications (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references public.users(id) on delete cascade not null,
+  method text not null check (method in ('didit', 'manual')),
+  status text not null default 'started'
+    check (status in ('started', 'pending_review', 'approved', 'declined', 'expired')),
+  -- Didit
+  didit_session_id text unique,
+  didit_status text,
+  -- True when the result came from Didit's test mode and is simulated, not a real check.
+  is_test boolean not null default false,
+  -- Manual review
+  legal_name text,
+  date_of_birth date,
+  document_type text check (document_type in ('passport', 'national_id', 'drivers_license', 'other')),
+  id_front_path text,
+  id_back_path text,
+  selfie_path text,
+  reviewed_by uuid references public.users(id),
+  -- Shown to the user when declined, so keep it factual and actionable.
+  review_note text,
+  created_at timestamptz not null default now(),
+  submitted_at timestamptz,
+  decided_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.kyc_verifications add column if not exists is_test boolean not null default false;
+
+create index if not exists idx_kyc_verifications_user on public.kyc_verifications(user_id, created_at desc);
+create index if not exists idx_kyc_verifications_queue on public.kyc_verifications(submitted_at)
+  where status = 'pending_review' and method = 'manual';
+-- A user has at most one manual submission open at a time.
+create unique index if not exists idx_kyc_one_open_manual on public.kyc_verifications(user_id)
+  where method = 'manual' and status in ('started', 'pending_review');
+
+alter table public.kyc_verifications enable row level security;
+revoke all on public.kyc_verifications from anon, authenticated;
+grant select on public.kyc_verifications to authenticated;
+
+drop policy if exists "Users can view own verifications" on public.kyc_verifications;
+drop policy if exists "KYC admins can view all verifications" on public.kyc_verifications;
+
+create policy "Users can view own verifications"
+  on public.kyc_verifications for select
+  using (auth.uid() = user_id);
+
+create policy "KYC admins can view all verifications"
+  on public.kyc_verifications for select
+  using (public.kyc_is_admin());
+
+-- 11c. Private bucket for ID photos and selfies
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('kyc-documents', 'kyc-documents', false, 8388608, array['image/jpeg', 'image/png'])
+on conflict (id) do update
+  set public = false,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "Users upload own KYC documents" on storage.objects;
+drop policy if exists "KYC admins read KYC documents" on storage.objects;
+
+-- Users may add files under their own folder ("<user id>/<verification id>/...").
+-- They cannot read, replace or delete them afterwards, and cannot see anyone else's.
+create policy "Users upload own KYC documents"
+  on storage.objects for insert
+  to authenticated
+  with check (
+    bucket_id = 'kyc-documents'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create policy "KYC admins read KYC documents"
+  on storage.objects for select
+  to authenticated
+  using (bucket_id = 'kyc-documents' and public.kyc_is_admin());
+
+-- 11d. Enforcement helper used by the wallet and P2P functions
+create or replace function public.kyc_require(p_feature text)
+returns void
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if exists (select 1 from public.kyc_settings where p_feature = any (required_for))
+     and not exists (select 1 from public.users where id = auth.uid() and kyc_verified) then
+    raise exception 'KYC_REQUIRED';
+  end if;
+end;
+$$;
+
+-- Internal: write a decision and keep users.kyc_verified in step with it
+create or replace function public.kyc_apply_decision(
+  p_verification_id uuid, p_status text, p_note text, p_reviewer uuid
+)
+returns public.kyc_verifications
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.kyc_verifications;
+begin
+  update public.kyc_verifications
+    set status = p_status,
+        review_note = p_note,
+        reviewed_by = coalesce(p_reviewer, reviewed_by),
+        decided_at = case when p_status in ('approved', 'declined', 'expired') then now() else decided_at end,
+        updated_at = now()
+    where id = p_verification_id
+    returning * into v_row;
+
+  if p_status = 'approved' then
+    update public.users set kyc_verified = true where id = v_row.user_id;
+  end if;
+  return v_row;
+end;
+$$;
+
+-- 11e. Manual review: user side
+create or replace function public.kyc_start_manual()
+returns public.kyc_verifications
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_row public.kyc_verifications;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  if exists (select 1 from public.kyc_settings where provider_mode = 'didit') then
+    raise exception 'MANUAL_KYC_DISABLED';
+  end if;
+  if exists (select 1 from public.users where id = v_uid and kyc_verified) then
+    raise exception 'ALREADY_VERIFIED';
+  end if;
+
+  select * into v_row from public.kyc_verifications
+    where user_id = v_uid and method = 'manual' and status in ('started', 'pending_review');
+  if found then
+    if v_row.status = 'pending_review' then
+      raise exception 'ALREADY_SUBMITTED';
+    end if;
+    return v_row;
+  end if;
+
+  -- Limit repeat attempts after a rejection.
+  if (select count(*) from public.kyc_verifications
+      where user_id = v_uid and method = 'manual' and created_at > now() - interval '24 hours') >= 3 then
+    raise exception 'TOO_MANY_ATTEMPTS';
+  end if;
+
+  insert into public.kyc_verifications (user_id, method) values (v_uid, 'manual')
+    returning * into v_row;
+  return v_row;
+end;
+$$;
+
+create or replace function public.kyc_submit_manual(
+  p_verification_id uuid,
+  p_legal_name text,
+  p_date_of_birth date,
+  p_document_type text,
+  p_id_front_path text,
+  p_id_back_path text,
+  p_selfie_path text
+)
+returns public.kyc_verifications
+language plpgsql
+security definer
+set search_path = public, storage
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_prefix text;
+  v_row public.kyc_verifications;
+  v_path text;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  select * into v_row from public.kyc_verifications
+    where id = p_verification_id and user_id = v_uid and method = 'manual' and status = 'started'
+    for update;
+  if not found then
+    raise exception 'VERIFICATION_NOT_OPEN';
+  end if;
+
+  if length(trim(coalesce(p_legal_name, ''))) < 3
+     or p_date_of_birth is null
+     or p_date_of_birth > (current_date - interval '18 years')
+     or p_date_of_birth < date '1900-01-01'
+     or p_document_type is null
+     or p_document_type not in ('passport', 'national_id', 'drivers_license', 'other') then
+    raise exception 'INVALID_DETAILS';
+  end if;
+  if p_id_front_path is null or p_selfie_path is null then
+    raise exception 'MISSING_DOCUMENTS';
+  end if;
+
+  -- Every file must sit in this user's folder for this verification and actually exist.
+  v_prefix := v_uid::text || '/' || v_row.id::text || '/';
+  foreach v_path in array array_remove(array[p_id_front_path, p_id_back_path, p_selfie_path], null) loop
+    if left(v_path, length(v_prefix)) <> v_prefix
+       or not exists (select 1 from storage.objects where bucket_id = 'kyc-documents' and name = v_path) then
+      raise exception 'MISSING_DOCUMENTS';
+    end if;
+  end loop;
+
+  update public.kyc_verifications
+    set legal_name = left(trim(p_legal_name), 120),
+        date_of_birth = p_date_of_birth,
+        document_type = p_document_type,
+        id_front_path = p_id_front_path,
+        id_back_path = p_id_back_path,
+        selfie_path = p_selfie_path,
+        status = 'pending_review',
+        submitted_at = now(),
+        updated_at = now()
+    where id = v_row.id
+    returning * into v_row;
+  return v_row;
+end;
+$$;
+
+-- 11f. Manual review: admin side
+create or replace function public.kyc_review(p_verification_id uuid, p_approve boolean, p_note text default null)
+returns public.kyc_verifications
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.kyc_verifications;
+begin
+  if not public.kyc_is_admin() then
+    raise exception 'NOT_ALLOWED';
+  end if;
+  select * into v_row from public.kyc_verifications
+    where id = p_verification_id and method = 'manual' and status = 'pending_review'
+    for update;
+  if not found then
+    raise exception 'VERIFICATION_NOT_OPEN';
+  end if;
+  if not p_approve and length(trim(coalesce(p_note, ''))) < 5 then
+    raise exception 'REASON_REQUIRED';
+  end if;
+
+  return public.kyc_apply_decision(
+    v_row.id,
+    case when p_approve then 'approved' else 'declined' end,
+    nullif(left(trim(coalesce(p_note, '')), 300), ''),
+    auth.uid()
+  );
+end;
+$$;
+
+-- Admin: withdraw someone's verified status (e.g. a fraudulent document found later)
+create or replace function public.kyc_revoke(p_user_id uuid, p_note text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.kyc_is_admin() then
+    raise exception 'NOT_ALLOWED';
+  end if;
+  if length(trim(coalesce(p_note, ''))) < 5 then
+    raise exception 'REASON_REQUIRED';
+  end if;
+  update public.users set kyc_verified = false where id = p_user_id;
+  update public.kyc_verifications
+    set status = 'declined', review_note = left(trim(p_note), 300),
+        reviewed_by = auth.uid(), decided_at = now(), updated_at = now()
+    where user_id = p_user_id and status = 'approved';
+end;
+$$;
+
+-- 11g. Didit: called only by the Edge Functions (service role)
+create or replace function public.kyc_didit_can_start(p_user_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_settings public.kyc_settings;
+begin
+  select * into v_settings from public.kyc_settings;
+  if exists (select 1 from public.users where id = p_user_id and kyc_verified) then
+    return 'verified';
+  end if;
+  if v_settings.provider_mode = 'manual' then
+    return 'manual';
+  end if;
+  if (select count(*) from public.kyc_verifications
+      where user_id = p_user_id and method = 'didit' and created_at > now() - interval '24 hours')
+     >= v_settings.didit_sessions_per_day then
+    return case when v_settings.provider_mode = 'auto' then 'manual' else 'limit' end;
+  end if;
+  return v_settings.provider_mode; -- 'auto' or 'didit'
+end;
+$$;
+
+drop function if exists public.kyc_didit_record_session(uuid, text);
+
+create or replace function public.kyc_didit_record_session(p_user_id uuid, p_session_id text, p_is_test boolean default false)
+returns public.kyc_verifications
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.kyc_verifications;
+begin
+  -- Didit hands back the same unfinished session for the same user, so this may already exist.
+  insert into public.kyc_verifications (user_id, method, didit_session_id, didit_status, is_test)
+  values (p_user_id, 'didit', p_session_id, 'Not Started', coalesce(p_is_test, false))
+  on conflict (didit_session_id) do update set updated_at = now()
+  returning * into v_row;
+  if v_row.user_id <> p_user_id then
+    raise exception 'SESSION_USER_MISMATCH';
+  end if;
+  return v_row;
+end;
+$$;
+
+-- Applies a status reported by Didit. Unknown sessions are ignored, and a late or
+-- out-of-order "in progress" event can never undo an approval.
+create or replace function public.kyc_didit_apply_status(p_session_id text, p_didit_status text)
+returns public.kyc_verifications
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.kyc_verifications;
+  v_status text;
+begin
+  select * into v_row from public.kyc_verifications
+    where didit_session_id = p_session_id and method = 'didit'
+    for update;
+  if not found then
+    return null;
+  end if;
+
+  v_status := case p_didit_status
+    when 'Approved' then 'approved'
+    when 'Declined' then 'declined'
+    when 'In Review' then 'pending_review'
+    when 'Abandoned' then 'expired'
+    when 'Expired' then 'expired'
+    when 'Kyc Expired' then 'expired'
+    when 'Not Started' then 'started'
+    when 'In Progress' then 'started'
+    when 'Awaiting User' then 'started'
+    when 'Resubmitted' then 'started'
+    else null
+  end;
+  if v_status is null then
+    return v_row;
+  end if;
+
+  if v_row.status = 'approved' then
+    -- Only an explicit decline or expiry of the verification changes an approved user.
+    if p_didit_status in ('Declined', 'Kyc Expired') then
+      update public.users set kyc_verified = false where id = v_row.user_id
+        and not exists (
+          select 1 from public.kyc_verifications k
+          where k.user_id = v_row.user_id and k.status = 'approved' and k.id <> v_row.id
+        );
+    else
+      return v_row;
+    end if;
+  elsif v_row.status in ('declined', 'expired') and v_status in ('started', 'expired') then
+    return v_row;
+  end if;
+
+  update public.kyc_verifications set didit_status = p_didit_status where id = v_row.id;
+  return public.kyc_apply_decision(
+    v_row.id, v_status,
+    case when v_status = 'declined' then 'Your ID or face check did not pass. You can try again.' else null end,
+    null
+  );
+end;
+$$;
+
+-- Going live: run `select public.kyc_clear_test_verifications();` in the SQL editor.
+-- Everyone who was only "verified" by a simulated test result goes back to
+-- unverified and is asked to verify for real. Returns how many users changed.
+create or replace function public.kyc_clear_test_verifications()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_count integer;
+begin
+  update public.kyc_verifications
+    set status = 'expired', review_note = 'Test verification cleared', updated_at = now()
+    where is_test and status in ('started', 'pending_review', 'approved');
+
+  update public.users u set kyc_verified = false
+    where u.kyc_verified
+      and not exists (
+        select 1 from public.kyc_verifications k
+        where k.user_id = u.id and k.status = 'approved' and not k.is_test
+      );
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
+-- 11h. Who may call what
+revoke execute on function public.kyc_apply_decision(uuid, text, text, uuid) from public, anon, authenticated;
+revoke execute on function public.kyc_require(text) from public, anon, authenticated;
+revoke execute on function public.kyc_didit_can_start(uuid) from public, anon, authenticated;
+revoke execute on function public.kyc_didit_record_session(uuid, text, boolean) from public, anon, authenticated;
+revoke execute on function public.kyc_clear_test_verifications() from public, anon, authenticated;
+revoke execute on function public.kyc_didit_apply_status(text, text) from public, anon, authenticated;
+
+revoke execute on function public.kyc_is_admin() from public, anon;
+revoke execute on function public.kyc_start_manual() from public, anon;
+revoke execute on function public.kyc_submit_manual(uuid, text, date, text, text, text, text) from public, anon;
+revoke execute on function public.kyc_review(uuid, boolean, text) from public, anon;
+revoke execute on function public.kyc_revoke(uuid, text) from public, anon;
+
+grant execute on function public.kyc_is_admin() to authenticated;
+grant execute on function public.kyc_start_manual() to authenticated;
+grant execute on function public.kyc_submit_manual(uuid, text, date, text, text, text, text) to authenticated;
+grant execute on function public.kyc_review(uuid, boolean, text) to authenticated;
+grant execute on function public.kyc_revoke(uuid, text) to authenticated;
+
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant execute on function public.kyc_didit_can_start(uuid) to service_role;
+    grant execute on function public.kyc_didit_record_session(uuid, text, boolean) to service_role;
+    grant execute on function public.kyc_didit_apply_status(text, text) to service_role;
+  end if;
+end $$;

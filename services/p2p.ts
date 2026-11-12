@@ -66,6 +66,7 @@ const ORDER_COLUMNS =
 
 const ERROR_MESSAGES: Record<string, string> = {
   NOT_SIGNED_IN: 'Please sign in again to continue.',
+  KYC_REQUIRED: 'Verify your identity first. Open Account, then Identity Verification.',
   INVALID_AMOUNT: `Enter an amount between ₱${P2P_MIN_AMOUNT.toLocaleString()} and ₱${P2P_MAX_AMOUNT.toLocaleString()}.`,
   INVALID_RECEIVER: "Check the receiver's name, phone number and address.",
   NO_PARTNER_NEARBY:

@@ -88,6 +88,7 @@ export async function ensureProfile(): Promise<UserProfile | null> {
 
 const WALLET_ERRORS: Record<string, string> = {
   NOT_SIGNED_IN: 'Please sign in again to continue.',
+  KYC_REQUIRED: 'Verify your identity first. Open Account, then Identity Verification.',
   PROFILE_MISSING: 'Your wallet is not set up yet. Sign out and back in, then try again.',
   INVALID_AMOUNT: 'That amount is not allowed. Enter a smaller amount and try again.',
   INVALID_RECIPIENT: 'That recipient cannot receive this payment.',

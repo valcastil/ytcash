@@ -10,6 +10,8 @@ A GCash-style digital wallet app for Filipinos with AI-powered multi-currency ca
 - **QR Payments** — Scan and generate QR codes for payments
 - **Multi-Currency** — Live exchange rates and automatic PHP conversion
 - **Secure Auth** — Email/password and phone OTP authentication via Supabase
+- **Identity Verification (KYC)** — ID scan, face match and liveness through Didit, with manual review as a fallback
+- **Fingerprint / Face ID Lock** — Unlocks the app and confirms sending or receiving money
 - **P2P Cash Delivery** — Send cash to anyone in the Philippines through the closest cash partner, with escrow
 - **Users Online Map** — Live map of signed-in users, with opt-in approximate location
 
@@ -71,6 +73,7 @@ app/
   add-money.tsx        Add funds via Stripe
   online-map.tsx       Live map of users online
   p2p/                 P2P cash delivery (hub, new order, order detail)
+  kyc/                 Identity verification, manual submission, admin review
 contexts/
   auth.tsx             Authentication context & provider
   presence.tsx         Who is online + location sharing choice
@@ -84,6 +87,75 @@ constants/
 supabase/
   migration.sql        Database schema & RLS policies
 ```
+
+## Identity Verification (KYC)
+
+Open it from **Account → Identity Verification**. A user becomes verified in one of two ways, and only the server can set the verified flag:
+
+- **Didit (automatic):** government ID scan, face match against the ID, and a liveness check, run by [Didit](https://didit.me)'s SDK inside the app.
+- **Manual review (fallback):** the user photographs their ID (front and back) and takes a selfie; you approve or reject it under **Review submissions**.
+
+The app always asks the server which one to use. The server picks Didit when it is set up and working, and answers "manual" when Didit is not configured yet, has run out of checks, rate-limits, or is unreachable. So the app works today with manual review only, and starts using Didit as soon as the secrets below are set.
+
+### Setup
+
+1. Re-run `supabase/migration.sql` (section 11).
+2. Make yourself a reviewer, in the Supabase SQL editor:
+   ```sql
+   insert into public.kyc_admins (user_id)
+   select id from public.users where email = 'you@example.com';
+   ```
+3. Deploy the two Edge Functions:
+   ```bash
+   supabase functions deploy kyc
+   supabase functions deploy kyc-webhook --no-verify-jwt
+   ```
+   `kyc-webhook` is called by Didit, which cannot send a Supabase login, so it checks Didit's signature on every request instead.
+
+### Connecting Didit (test mode)
+
+1. In the Didit console, create an application in **sandbox / test mode** and a KYC workflow with ID Verification, Face Match and Liveness.
+2. Set the webhook URL to `https://<your-project>.supabase.co/functions/v1/kyc-webhook`.
+3. Store the keys as Edge Function secrets. They stay on the server and are never in the app:
+   ```bash
+   supabase secrets set DIDIT_API_KEY=... DIDIT_WORKFLOW_ID=... DIDIT_WEBHOOK_SECRET=... DIDIT_MODE=test
+   ```
+   Optional in test mode: `DIDIT_SANDBOX_SCENARIO=approve` (or another scenario from Didit's sandbox catalog) forces a known result.
+
+Test-mode results are simulated. They are stored with `is_test = true` and shown with a "TEST MODE" label, and they do mark the user verified so the whole flow can be tried.
+
+### Going live
+
+1. Create a live application in Didit and replace the three secrets with its values, plus `DIDIT_MODE=live`.
+2. Run `select public.kyc_clear_test_verifications();` so nobody stays verified from a simulated result.
+
+### Settings
+
+Edit the single row in `kyc_settings`:
+
+| Column | Meaning |
+|--------|---------|
+| `provider_mode` | `auto` (Didit, falling back to manual), `manual` (manual only, e.g. when the free Didit checks are used up), `didit` (no fallback) |
+| `didit_sessions_per_day` | Didit sessions one user may start per 24 hours (default 3), to protect your quota |
+| `required_for` | Features that need a verified identity: any of `p2p`, `send`. Empty by default, so KYC is optional until you turn it on, e.g. `update kyc_settings set required_for = '{p2p,send}';` |
+
+To withdraw a verification later: `select public.kyc_revoke('<user id>', 'reason');` as a reviewer.
+
+### Fingerprint / Face ID lock
+
+Phones never give an app the fingerprint itself; the operating system checks it and answers yes or no. YTCash uses that check to:
+
+- unlock the app when it is opened, or reopened after 30 seconds in the background
+- confirm sending money (Send, P2P delivery, releasing escrow)
+- confirm receiving money (Add Money, Scan Cash, a P2P partner collecting a payout)
+
+It is on by default when the phone has a fingerprint or face set up, falls back to the phone passcode, and can be turned off under Identity Verification. Money sent to a user by someone else arrives without any action, so there is nothing to confirm for that.
+
+### Stored documents
+
+ID photos and selfies for manual review go to the private `kyc-documents` storage bucket. Users can add files to their own folder only and cannot read them back; only reviewers can view them, through links that expire after 5 minutes. Decide how long you keep them and delete older files from the Supabase dashboard.
+
+Server tests: `deno test supabase/functions/_tests`.
 
 ## Wallet Security
 

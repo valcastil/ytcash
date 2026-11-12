@@ -20,6 +20,7 @@ import {
   type DetectedNote,
 } from '@/services/cash-scanner';
 import { getPhpEquivalent } from '@/services/currency-api';
+import { confirmWithBiometrics } from '@/services/biometrics';
 import { addScannedCash, walletErrorMessage, type ScannedNoteInput } from '@/services/supabase';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
@@ -102,6 +103,7 @@ export default function CashScannerScreen() {
 
   async function addToWallet() {
     if (!user) return;
+    if (!(await confirmWithBiometrics(user.id, 'Confirm adding this cash to your wallet'))) return;
     setLoading(true);
 
     try {

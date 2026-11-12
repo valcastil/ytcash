@@ -14,11 +14,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '@/contexts/auth';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { formatCurrency, phpToSats } from '@/constants/currencies';
+import { confirmWithBiometrics } from '@/services/biometrics';
 import { depositFunds, walletErrorMessage } from '@/services/supabase';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function AddMoneyScreen() {
-  const { profile, refreshProfile } = useAuth();
+  const { user, profile, refreshProfile } = useAuth();
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
   const [selectedMethod, setSelectedMethod] = useState<'card' | 'lightning'>('card');
@@ -33,6 +34,7 @@ export default function AddMoneyScreen() {
       Alert.alert('Error', 'Please enter a valid amount');
       return;
     }
+    if (!(await confirmWithBiometrics(user?.id, `Confirm adding ${formatCurrency(amt)}`))) return;
 
     setLoading(true);
     try {
