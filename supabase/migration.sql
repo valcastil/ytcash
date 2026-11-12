@@ -2350,7 +2350,10 @@ grant execute on function public.p2p_direct_report_unpaid(uuid) to authenticated
 -- The sender can be anywhere, as long as they can pay with one of those apps.
 --
 -- The partner is paid AFTER handing over cash, so the partner carries the
--- risk of a sender who does not pay. Senders with an unpaid delivery cannot
+-- risk of a sender who does not pay, and of carrying cash. For that they set a
+-- commission by risk level (low 5%, medium 10%, high 20%), paid by the sender on
+-- top of the cash amount, and can ask to meet the receiver at a public place
+-- instead of going to an address. The sender approves the offer first. Senders with an unpaid delivery cannot
 -- start another one, and partners can report non-payment.
 -- ============================================================
 
@@ -2390,10 +2393,19 @@ create table if not exists public.direct_orders (
   receiver_lat double precision not null,
   receiver_lng double precision not null,
   distance_km numeric(8,2),
-  -- requested -> accepted -> delivered (OTP given) -> paid (sender says so) -> completed (partner got it)
+  -- How the cash changes hands: at the receiver's address, or at a public place both agree on.
+  handover_type text not null default 'address' check (handover_type in ('address', 'meetup')),
+  meeting_place text,
+  -- Set by the partner in their offer. The commission is paid by the sender, on top of the
+  -- cash amount, directly to the partner: low 5%, medium 10%, high 20%.
+  risk_level text check (risk_level in ('low', 'medium', 'high')),
+  commission_rate numeric(5,4) not null default 0,
+  commission_amount numeric(12,2) not null default 0,
+  -- requested -> offered (partner names risk and hand-over) -> accepted (sender approves)
+  --   -> delivered (OTP given) -> paid (sender says so) -> completed (partner got it)
   -- declined / cancelled end it early. disputed = partner reports no payment. unpaid = confirmed by a reviewer.
   status text not null default 'requested'
-    check (status in ('requested', 'accepted', 'delivered', 'paid', 'completed',
+    check (status in ('requested', 'offered', 'accepted', 'delivered', 'paid', 'completed',
                       'declined', 'cancelled', 'disputed', 'unpaid')),
   payment_reference text,
   resolution_note text,
@@ -2417,6 +2429,21 @@ alter table public.direct_orders drop constraint if exists direct_orders_currenc
 alter table public.direct_orders add constraint direct_orders_currency_check
   check (currency in ('PHP', 'INR', 'MXN')) not valid;
 delete from public.partner_payout_accounts where method = 'eandmoney';
+alter table public.direct_orders add column if not exists handover_type text not null default 'address';
+alter table public.direct_orders add column if not exists meeting_place text;
+alter table public.direct_orders add column if not exists risk_level text;
+alter table public.direct_orders add column if not exists commission_rate numeric(5,4) not null default 0;
+alter table public.direct_orders add column if not exists commission_amount numeric(12,2) not null default 0;
+alter table public.direct_orders drop constraint if exists direct_orders_status_check;
+alter table public.direct_orders add constraint direct_orders_status_check
+  check (status in ('requested', 'offered', 'accepted', 'delivered', 'paid', 'completed',
+                    'declined', 'cancelled', 'disputed', 'unpaid'));
+alter table public.direct_orders drop constraint if exists direct_orders_handover_type_check;
+alter table public.direct_orders add constraint direct_orders_handover_type_check
+  check (handover_type in ('address', 'meetup'));
+alter table public.direct_orders drop constraint if exists direct_orders_risk_level_check;
+alter table public.direct_orders add constraint direct_orders_risk_level_check
+  check (risk_level in ('low', 'medium', 'high'));
 alter table public.partner_payout_accounts drop constraint if exists partner_payout_accounts_method_check;
 alter table public.partner_payout_accounts add constraint partner_payout_accounts_method_check
   check (method in ('gcash', 'gotyme', 'maya', 'upi', 'spei', 'mercadopago'));
@@ -2616,6 +2643,10 @@ as $$
 $$;
 
 -- 13e. Sender: ask a partner to deliver
+-- The sender says how they would like the cash handed over. The partner answers with an
+-- offer (13f) and nothing goes ahead until the sender approves it.
+drop function if exists public.direct_create_order(uuid, numeric, text, text, text, text, double precision, double precision);
+
 create or replace function public.direct_create_order(
   p_partner_id uuid,
   p_amount numeric,
@@ -2624,7 +2655,9 @@ create or replace function public.direct_create_order(
   p_receiver_phone text,
   p_receiver_address text,
   p_lat double precision,
-  p_lng double precision
+  p_lng double precision,
+  p_handover_type text default 'address',
+  p_meeting_place text default null
 )
 returns public.direct_orders
 language plpgsql
@@ -2660,7 +2693,7 @@ begin
     raise exception 'PAY_PREVIOUS_FIRST';
   end if;
   if (select count(*) from public.direct_orders
-      where sender_id = v_uid and status in ('requested', 'accepted')) >= 3 then
+      where sender_id = v_uid and status in ('requested', 'offered', 'accepted')) >= 3 then
     raise exception 'TOO_MANY_OPEN';
   end if;
 
@@ -2681,6 +2714,9 @@ begin
      or p_lat not between -90 and 90 or p_lng not between -180 and 180 then
     raise exception 'INVALID_RECEIVER';
   end if;
+  if p_handover_type is null or p_handover_type not in ('address', 'meetup') then
+    raise exception 'INVALID_HANDOVER';
+  end if;
 
   select p.user_id,
          coalesce(nullif(split_part(trim(u.full_name), ' ', 1), ''), 'YTCash partner') as name,
@@ -2699,11 +2735,15 @@ begin
 
   insert into public.direct_orders
     (sender_id, partner_id, sender_name, partner_name, amount, currency, method,
-     receiver_name, receiver_phone, receiver_address, receiver_lat, receiver_lng, distance_km)
+     receiver_name, receiver_phone, receiver_address, receiver_lat, receiver_lng, distance_km,
+     handover_type, meeting_place)
   values
     (v_uid, p_partner_id, v_sender_name, v_partner.name, v_amount, v_currency, p_method,
      left(trim(p_receiver_name), 80), left(trim(p_receiver_phone), 30),
-     left(trim(p_receiver_address), 300), p_lat, p_lng, round(v_partner.km::numeric, 2))
+     left(trim(p_receiver_address), 300), p_lat, p_lng, round(v_partner.km::numeric, 2),
+     p_handover_type,
+     -- A place the sender suggests for a meet-up; the partner confirms or changes it in their offer.
+     case when p_handover_type = 'meetup' then nullif(left(trim(coalesce(p_meeting_place, '')), 120), '') end)
   returning * into v_order;
 
   insert into public.direct_order_codes (order_id, code)
@@ -2718,8 +2758,27 @@ begin
 end;
 $$;
 
--- 13f. Partner: accept or decline
-create or replace function public.direct_accept_order(p_order_id uuid)
+-- 13f. Partner: make an offer; sender: approve it
+
+-- The partner's commission for each risk level, as a share of the cash amount.
+create or replace function public.direct_risk_rate(p_level text)
+returns numeric
+language sql
+immutable
+as $$
+  select case p_level when 'low' then 0.05 when 'medium' then 0.10 when 'high' then 0.20 end;
+$$;
+
+drop function if exists public.direct_accept_order(uuid);
+
+-- Partner: judge the delivery risk (which sets the commission) and say where the cash
+-- will be handed over. Can be sent again to revise it until the sender approves.
+create or replace function public.direct_make_offer(
+  p_order_id uuid,
+  p_risk_level text,
+  p_handover_type text,
+  p_meeting_place text default null
+)
 returns public.direct_orders
 language plpgsql
 security definer
@@ -2728,13 +2787,24 @@ as $$
 declare
   v_order public.direct_orders;
   v_account public.partner_payout_accounts;
+  v_rate numeric := public.direct_risk_rate(p_risk_level);
+  v_place text := nullif(left(trim(coalesce(p_meeting_place, '')), 120), '');
 begin
   perform public.kyc_require('p2p');
   select * into v_order from public.direct_orders
-    where id = p_order_id and partner_id = auth.uid() and status = 'requested'
+    where id = p_order_id and partner_id = auth.uid() and status in ('requested', 'offered')
     for update;
   if not found then
     raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  if v_rate is null then
+    raise exception 'INVALID_RISK_LEVEL';
+  end if;
+  if p_handover_type is null or p_handover_type not in ('address', 'meetup') then
+    raise exception 'INVALID_HANDOVER';
+  end if;
+  if p_handover_type = 'meetup' and (v_place is null or length(v_place) < 3) then
+    raise exception 'MEETING_PLACE_REQUIRED';
   end if;
 
   -- Fix the account to pay now, so it cannot change after the cash is handed over.
@@ -2747,14 +2817,40 @@ begin
     set account_name = v_account.account_name, account_number = v_account.account_number
     where order_id = v_order.id;
 
-  update public.direct_orders set status = 'accepted', accepted_at = now()
+  update public.direct_orders
+    set status = 'offered',
+        risk_level = p_risk_level,
+        commission_rate = v_rate,
+        commission_amount = round(v_order.amount * v_rate, 2),
+        handover_type = p_handover_type,
+        meeting_place = case when p_handover_type = 'meetup' then v_place end
     where id = v_order.id
     returning * into v_order;
   return v_order;
 end;
 $$;
 
--- Partner declines a request, or gives up one they accepted but have not delivered.
+-- Sender: agree to the partner's commission and hand-over place. Only now may the partner go.
+create or replace function public.direct_approve_offer(p_order_id uuid)
+returns public.direct_orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order public.direct_orders;
+begin
+  update public.direct_orders set status = 'accepted', accepted_at = now()
+    where id = p_order_id and sender_id = auth.uid() and status = 'offered'
+    returning * into v_order;
+  if not found then
+    raise exception 'ORDER_NOT_AVAILABLE';
+  end if;
+  return v_order;
+end;
+$$;
+
+-- Partner declines a request, or gives up one they have not delivered yet.
 create or replace function public.direct_decline_order(p_order_id uuid)
 returns public.direct_orders
 language plpgsql
@@ -2765,7 +2861,7 @@ declare
   v_order public.direct_orders;
 begin
   update public.direct_orders set status = 'declined', closed_at = now()
-    where id = p_order_id and partner_id = auth.uid() and status in ('requested', 'accepted')
+    where id = p_order_id and partner_id = auth.uid() and status in ('requested', 'offered', 'accepted')
     returning * into v_order;
   if not found then
     raise exception 'ORDER_NOT_AVAILABLE';
@@ -2774,7 +2870,7 @@ begin
 end;
 $$;
 
--- Sender cancels before the cash is handed over.
+-- Sender cancels (or turns down the offer) before the cash is handed over.
 create or replace function public.direct_cancel_order(p_order_id uuid)
 returns public.direct_orders
 language plpgsql
@@ -2785,7 +2881,7 @@ declare
   v_order public.direct_orders;
 begin
   update public.direct_orders set status = 'cancelled', closed_at = now()
-    where id = p_order_id and sender_id = auth.uid() and status in ('requested', 'accepted')
+    where id = p_order_id and sender_id = auth.uid() and status in ('requested', 'offered', 'accepted')
     returning * into v_order;
   if not found then
     raise exception 'ORDER_NOT_AVAILABLE';
@@ -2972,8 +3068,9 @@ begin
     'public.partner_set_payout_account(text, text, text)',
     'public.partner_remove_payout_account(text)',
     'public.direct_find_partners(double precision, double precision, text)',
-    'public.direct_create_order(uuid, numeric, text, text, text, text, double precision, double precision)',
-    'public.direct_accept_order(uuid)',
+    'public.direct_create_order(uuid, numeric, text, text, text, text, double precision, double precision, text, text)',
+    'public.direct_make_offer(uuid, text, text, text)',
+    'public.direct_approve_offer(uuid)',
     'public.direct_decline_order(uuid)',
     'public.direct_cancel_order(uuid)',
     'public.direct_confirm_delivery(uuid, text)',

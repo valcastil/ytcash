@@ -21,8 +21,9 @@ import { BitcoinColors, Brand } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth';
 import { confirmWithBiometrics } from '@/services/biometrics';
 import {
-  acceptDirectOrder,
+  approveDirectOffer,
   cancelDirectOrder,
+  commissionFor,
   confirmDirectDelivery,
   confirmDirectPayment,
   declineDirectOrder,
@@ -30,20 +31,27 @@ import {
   directErrorMessage,
   directStatusColor,
   directStatusLabel,
+  directTotal,
   formatDirectAmount,
   formatKm,
   getDirectCode,
   getDirectOrder,
   getPaymentDetails,
+  HANDOVER_LABEL,
   isDirectOpen,
   listDirectMessages,
+  makeDirectOffer,
   markDirectPaid,
   PAY_METHOD_LABEL,
   reportDirectUnpaid,
+  RISK_LEVELS,
+  riskLabel,
   sendDirectMessage,
   subscribeToDirect,
   type DirectMessage,
   type DirectOrder,
+  type HandoverType,
+  type RiskLevel,
 } from '@/services/direct';
 
 type Role = 'sender' | 'partner';
@@ -84,6 +92,11 @@ export default function DirectOrderScreen() {
   const [reference, setReference] = useState('');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  // The partner's offer form.
+  const [risk, setRisk] = useState<RiskLevel | null>(null);
+  const [handover, setHandover] = useState<HandoverType>('address');
+  const [meetingPlace, setMeetingPlace] = useState('');
+  const [offerLoadedFor, setOfferLoadedFor] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -93,13 +106,19 @@ export default function DirectOrderScreen() {
       setLoadError(null);
       if (next) {
         const [code, details, chat] = await Promise.all([
-          next.sender_id === userId && (next.status === 'requested' || next.status === 'accepted')
-            ? getDirectCode(next.id)
+          next.sender_id === userId && next.status === 'accepted' ? getDirectCode(next.id)
             : Promise.resolve(null),
           getPaymentDetails(next.id),
           listDirectMessages(next.id).catch(() => []),
         ]);
         setOtp(code);
+        // Start the offer form from what the sender asked for (or the offer already sent), once.
+        if (offerLoadedFor !== next.id) {
+          setOfferLoadedFor(next.id);
+          setRisk(next.risk_level);
+          setHandover(next.handover_type);
+          setMeetingPlace(next.meeting_place ?? '');
+        }
         setPayTo(details);
         setMessages(chat);
       }
@@ -108,7 +127,7 @@ export default function DirectOrderScreen() {
     } finally {
       setLoading(false);
     }
-  }, [id, userId]);
+  }, [id, userId, offerLoadedFor]);
 
   useEffect(() => {
     load();
@@ -165,7 +184,12 @@ export default function DirectOrderScreen() {
 
   const role: Role = order.sender_id === userId ? 'sender' : 'partner';
   const color = directStatusColor(order);
-  const amountText = formatDirectAmount(order.amount, order.currency);
+  const money = (value: number) => formatDirectAmount(value, order.currency);
+  const amountText = money(order.amount);
+  // What the sender pays the partner: the cash plus the partner's commission.
+  const totalText = money(directTotal(order));
+  const hasOffer = order.risk_level !== null;
+  const meetup = order.handover_type === 'meetup';
   const app = PAY_METHOD_LABEL[order.method];
   const done = stepsDone(order);
   const locked = order.failed_code_attempts >= 5;
@@ -174,13 +198,13 @@ export default function DirectOrderScreen() {
   const steps =
     role === 'sender'
       ? [
-          `${order.partner_name} accepts`,
+          `${order.partner_name} sets the commission and you approve`,
           `${order.receiver_name} gets the cash and gives the OTP`,
           `You pay ${order.partner_name} by ${app}`,
           `${order.partner_name} confirms the payment`,
         ]
       : [
-          'You accept',
+          `You set your commission and ${order.sender_name} approves`,
           `You hand over the cash and enter the OTP`,
           `${order.sender_name} pays your ${app}`,
           'You confirm the payment',
@@ -207,13 +231,26 @@ export default function DirectOrderScreen() {
     }, 'Could not confirm');
   }
 
+  async function handleMakeOffer() {
+    if (!order) return;
+    if (!risk) {
+      Alert.alert('Choose a risk level', 'Pick low, medium or high. It sets your commission.');
+      return;
+    }
+    if (handover === 'meetup' && meetingPlace.trim().length < 3) {
+      Alert.alert('Name the meeting place', 'Enter a public place both of you can find, like a mall entrance or a bank.');
+      return;
+    }
+    await run(() => makeDirectOffer(order.id, risk, handover, meetingPlace), 'Could not send offer');
+  }
+
   async function handleMarkPaid() {
     if (!order) return;
     if (reference.trim().length < 4) {
       Alert.alert('Add the reference', `Enter the reference number shown in ${app} after you paid.`);
       return;
     }
-    if (!(await confirmWithBiometrics(userId, `Confirm you paid ${amountText}`))) return;
+    if (!(await confirmWithBiometrics(userId, `Confirm you paid ${formatDirectAmount(directTotal(order), order.currency)}`))) return;
     await run(() => markDirectPaid(order.id, reference), 'Could not save');
   }
 
@@ -250,6 +287,12 @@ export default function DirectOrderScreen() {
           <Text style={styles.amountSub}>
             {role === 'sender' ? `cash to ${order.receiver_name} via ${order.partner_name}` : `cash for ${order.receiver_name}, paid by ${app}`}
           </Text>
+          {hasOffer && (
+            <Text style={styles.commissionLine}>
+              + {money(order.commission_amount)} commission ({riskLabel(order.risk_level)}) = {totalText}{' '}
+              {role === 'sender' ? 'to pay' : 'to receive'}
+            </Text>
+          )}
         </View>
 
         {/* Steps */}
@@ -288,8 +331,43 @@ export default function DirectOrderScreen() {
           </View>
         )}
 
+        {/* Sender: waiting for the partner's offer */}
+        {role === 'sender' && order.status === 'requested' && (
+          <View style={styles.card}>
+            <Text style={styles.bodyText}>
+              Waiting for {order.partner_name} to set their commission (5%, 10% or 20% of the cash amount, depending on
+              how risky they judge the delivery) and confirm the hand-over. You will be asked to approve it.
+            </Text>
+          </View>
+        )}
+
+        {/* Sender: review the offer */}
+        {role === 'sender' && order.status === 'offered' && (
+          <View style={[styles.card, styles.payCard]}>
+            <Text style={styles.label}>{order.partner_name.toUpperCase()}&apos;S OFFER</Text>
+            <OfferRow label="Cash delivered" value={amountText} />
+            <OfferRow label={`Commission (${riskLabel(order.risk_level)})`} value={money(order.commission_amount)} />
+            <OfferRow label={`You pay ${order.partner_name}`} value={totalText} strong />
+            <OfferRow
+              label="Hand-over"
+              value={meetup ? `Meet at ${order.meeting_place}` : HANDOVER_LABEL.address}
+            />
+            <Text style={[styles.bodyText, styles.offerNote]}>
+              {meetup
+                ? `Check that ${order.receiver_name} can get to this place. `
+                : ''}
+              If you approve, {order.partner_name} goes ahead and you pay {totalText} after the cash is handed over.
+            </Text>
+            <PrimaryButton
+              label={`Approve and pay ${totalText} after delivery`}
+              busy={busy}
+              onPress={() => run(() => approveDirectOffer(order.id), 'Could not approve')}
+            />
+          </View>
+        )}
+
         {/* Sender: OTP */}
-        {role === 'sender' && otp && (order.status === 'requested' || order.status === 'accepted') && (
+        {role === 'sender' && otp && order.status === 'accepted' && (
           <View style={[styles.card, styles.codeCard]}>
             <Text style={styles.label}>OTP CODE FOR {order.receiver_name.toUpperCase()}</Text>
             <Text style={styles.code} selectable accessibilityLabel={`OTP code ${otp.split('').join(' ')}`}>
@@ -297,7 +375,8 @@ export default function DirectOrderScreen() {
             </Text>
             <Text style={styles.bodyText}>
               Send this code to {order.receiver_name} only, not to the partner. They give it to {order.partner_name}{' '}
-              after counting the cash. Once it is entered, you owe {order.partner_name} {amountText}.
+              after counting the cash{meetup ? ` at ${order.meeting_place}` : ''}. Once it is entered, you owe{' '}
+              {order.partner_name} {totalText}.
             </Text>
           </View>
         )}
@@ -312,7 +391,8 @@ export default function DirectOrderScreen() {
               </Text>
             )}
             <Text style={styles.bodyText}>
-              {order.receiver_name} has the cash. Open your {app} app and send {amountText} to:
+              {order.receiver_name} has the cash. Open your {app} app and send {totalText}
+              {order.commission_amount > 0 ? ` (${amountText} cash + ${money(order.commission_amount)} commission)` : ''} to:
             </Text>
             {payTo ? (
               <View style={styles.payBox}>
@@ -337,7 +417,7 @@ export default function DirectOrderScreen() {
               autoCapitalize="characters"
               maxLength={60}
             />
-            <PrimaryButton label={`I have paid ${amountText}`} busy={busy} onPress={handleMarkPaid} />
+            <PrimaryButton label={`I have paid ${totalText}`} busy={busy} onPress={handleMarkPaid} />
           </View>
         )}
 
@@ -350,13 +430,19 @@ export default function DirectOrderScreen() {
           </View>
         )}
 
-        {/* Partner: receiver details */}
-        {role === 'partner' && ['requested', 'accepted'].includes(order.status) && (
+        {/* Partner: where and to whom */}
+        {role === 'partner' && ['requested', 'offered', 'accepted'].includes(order.status) && (
           <View style={styles.card}>
-            <Text style={styles.label}>DELIVER TO</Text>
+            <Text style={styles.label}>{meetup && order.status !== 'requested' ? 'MEET THE RECEIVER' : 'DELIVER TO'}</Text>
             <DetailRow icon="person-outline" value={order.receiver_name} />
             {order.status === 'accepted' && <DetailRow icon="call-outline" value={order.receiver_phone} />}
-            <DetailRow icon="location-outline" value={order.receiver_address} />
+            {meetup && order.meeting_place ? (
+              <DetailRow
+                icon="storefront-outline"
+                value={`${order.status === 'requested' ? 'Suggested meeting place' : 'Meet at'}: ${order.meeting_place}`}
+              />
+            ) : null}
+            <DetailRow icon="location-outline" value={`${meetup ? 'Receiver is near: ' : ''}${order.receiver_address}`} />
             {order.distance_km !== null && <DetailRow icon="navigate-outline" value={`${formatKm(order.distance_km)} from your area`} />}
             {order.status === 'accepted' && (
               <View style={styles.linkRow}>
@@ -371,7 +457,11 @@ export default function DirectOrderScreen() {
                   style={styles.outlineBtn}
                   onPress={() =>
                     Linking.openURL(
-                      `https://www.google.com/maps/search/?api=1&query=${order.receiver_lat},${order.receiver_lng}`,
+                      `https://www.google.com/maps/search/?api=1&query=${
+                        meetup && order.meeting_place
+                          ? encodeURIComponent(order.meeting_place)
+                          : `${order.receiver_lat},${order.receiver_lng}`
+                      }`,
                     ).catch(() => {})
                   }
                   activeOpacity={0.8}>
@@ -383,13 +473,89 @@ export default function DirectOrderScreen() {
           </View>
         )}
 
-        {/* Partner: warning before accepting */}
+        {/* Partner: make or revise the offer */}
+        {role === 'partner' && (order.status === 'requested' || order.status === 'offered') && (
+          <View style={[styles.card, styles.payCard]}>
+            <Text style={styles.label}>{order.status === 'offered' ? 'YOUR OFFER' : 'MAKE YOUR OFFER'}</Text>
+            {order.status === 'offered' && (
+              <Text style={[styles.bodyText, styles.offerNote]}>
+                Sent. Waiting for {order.sender_name} to approve. Do not go yet. You can still change it below.
+              </Text>
+            )}
+
+            <Text style={styles.subLabel}>How risky is this delivery for you?</Text>
+            <View style={styles.riskRow}>
+              {RISK_LEVELS.map((level) => {
+                const isSelected = level.value === risk;
+                return (
+                  <TouchableOpacity
+                    key={level.value}
+                    style={[styles.riskChip, isSelected && styles.riskChipSelected]}
+                    onPress={() => setRisk(level.value)}
+                    activeOpacity={0.8}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: isSelected }}
+                    accessibilityLabel={`${level.label} risk, ${Math.round(level.rate * 100)} percent commission`}>
+                    <Text style={[styles.riskLabel, isSelected && styles.riskLabelSelected]}>{level.label}</Text>
+                    <Text style={styles.riskRate}>{Math.round(level.rate * 100)}%</Text>
+                    <Text style={styles.riskAmount}>+{money(commissionFor(order.amount, level.value))}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={[styles.subLabel, styles.labelSpaced]}>Where will you hand over the cash?</Text>
+            {(['address', 'meetup'] as const).map((option) => {
+              const isSelected = option === handover;
+              return (
+                <TouchableOpacity
+                  key={option}
+                  style={styles.handoverRow}
+                  onPress={() => setHandover(option)}
+                  activeOpacity={0.8}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: isSelected }}>
+                  <Ionicons
+                    name={isSelected ? 'radio-button-on' : 'radio-button-off'}
+                    size={18}
+                    color={isSelected ? BitcoinColors.orange : BitcoinColors.textMuted}
+                  />
+                  <Text style={styles.handoverText}>
+                    {HANDOVER_LABEL[option]}
+                    {option === order.handover_type && order.status === 'requested' ? ' (sender asked for this)' : ''}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+            {handover === 'meetup' && (
+              <TextInput
+                style={[styles.input, styles.inputSpaced]}
+                value={meetingPlace}
+                onChangeText={setMeetingPlace}
+                placeholder="Public place, e.g. SM City main entrance"
+                placeholderTextColor={BitcoinColors.textMuted}
+                maxLength={120}
+              />
+            )}
+
+            {risk && (
+              <Text style={[styles.bodyText, styles.offerNote]}>
+                You hand over {amountText} and {order.sender_name} pays you{' '}
+                {money(order.amount + commissionFor(order.amount, risk))} by {app}.
+              </Text>
+            )}
+            <PrimaryButton label={order.status === 'offered' ? 'Update offer' : 'Send offer'} busy={busy} onPress={handleMakeOffer} />
+          </View>
+        )}
+
+        {/* Partner: warning before offering */}
         {role === 'partner' && order.status === 'requested' && (
           <View style={styles.infoBox}>
             <Ionicons name="alert-circle" size={16} color={BitcoinColors.orange} />
             <Text style={styles.infoText}>
               You hand over {amountText} of your own cash first and {order.sender_name} pays your {app} afterwards.
-              YTCash does not hold this money. Only accept if you are comfortable with that.
+              YTCash does not hold this money. Set your commission for that risk, and meet somewhere public if you
+              prefer not to go to an address.
             </Text>
           </View>
         )}
@@ -403,8 +569,8 @@ export default function DirectOrderScreen() {
             ) : (
               <>
                 <Text style={styles.bodyText}>
-                  After {order.receiver_name} has counted the cash, ask for their {DIRECT_CODE_LENGTH}-digit code. Entering
-                  it tells {order.sender_name} to pay you.
+                  After {order.receiver_name} has counted the cash{meetup ? ` at ${order.meeting_place}` : ''}, ask for their{' '}
+                  {DIRECT_CODE_LENGTH}-digit code. Entering it tells {order.sender_name} to pay you {totalText}.
                 </Text>
                 <TextInput
                   style={styles.codeInput}
@@ -432,18 +598,18 @@ export default function DirectOrderScreen() {
             <Text style={styles.label}>{order.status === 'paid' ? 'CHECK YOUR PAYMENT' : 'WAITING FOR PAYMENT'}</Text>
             <Text style={styles.bodyText}>
               {order.status === 'paid'
-                ? `${order.sender_name} says they sent ${amountText} to your ${app}. Reference: ${order.payment_reference}. Check your ${app} before confirming.`
+                ? `${order.sender_name} says they sent ${totalText} to your ${app}. Reference: ${order.payment_reference}. Check your ${app} before confirming.`
                 : order.status === 'delivered'
-                ? `${order.sender_name} has been told to send ${amountText} to your ${app}${payTo ? ` (${payTo.account_number})` : ''}.`
+                ? `${order.sender_name} has been told to send ${totalText} (${amountText} cash + ${money(order.commission_amount)} commission) to your ${app}${payTo ? ` (${payTo.account_number})` : ''}.`
                 : `You reported this as not paid. If the payment arrives, confirm it below.`}
             </Text>
             <PrimaryButton
-              label={`I received ${amountText}`}
+              label={`I received ${totalText}`}
               busy={busy}
               onPress={() =>
                 confirmThen(
                   'Confirm you were paid?',
-                  `Only confirm after you see ${amountText} in your ${app}. This cannot be undone.`,
+                  `Only confirm after you see ${totalText} in your ${app}. This cannot be undone.`,
                   'I was paid',
                   false,
                   () => run(() => confirmDirectPayment(order.id), 'Could not confirm'),
@@ -479,10 +645,7 @@ export default function DirectOrderScreen() {
         )}
 
         {/* Actions */}
-        {role === 'partner' && order.status === 'requested' && (
-          <PrimaryButton label="Accept delivery" busy={busy} onPress={() => run(() => acceptDirectOrder(order.id), 'Could not accept')} />
-        )}
-        {role === 'partner' && (order.status === 'requested' || order.status === 'accepted') && (
+        {role === 'partner' && ['requested', 'offered', 'accepted'].includes(order.status) && (
           <SecondaryButton
             label={order.status === 'requested' ? 'Decline' : "I can't deliver this"}
             disabled={busy}
@@ -497,9 +660,9 @@ export default function DirectOrderScreen() {
             }
           />
         )}
-        {role === 'sender' && (order.status === 'requested' || order.status === 'accepted') && (
+        {role === 'sender' && ['requested', 'offered', 'accepted'].includes(order.status) && (
           <SecondaryButton
-            label="Cancel delivery"
+            label={order.status === 'offered' ? 'Decline offer and cancel' : 'Cancel delivery'}
             disabled={busy}
             onPress={() =>
               confirmThen(
@@ -558,6 +721,15 @@ export default function DirectOrderScreen() {
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
+  );
+}
+
+function OfferRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <View style={styles.offerRow}>
+      <Text style={styles.offerLabel}>{label}</Text>
+      <Text style={[styles.offerValue, strong && styles.offerValueStrong]}>{value}</Text>
+    </View>
   );
 }
 
@@ -627,6 +799,31 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
   amount: { fontSize: 34, fontWeight: '900', color: '#FFFFFF', textAlign: 'center', marginTop: 12 },
   amountSub: { fontSize: 13, color: BitcoinColors.textSecondary, textAlign: 'center', marginTop: 4 },
+  commissionLine: { fontSize: 12, fontWeight: '700', color: BitcoinColors.gold, textAlign: 'center', marginTop: 8 },
+  subLabel: { fontSize: 13, fontWeight: '700', color: '#FFFFFF', marginBottom: 8 },
+  inputSpaced: { marginTop: 8 },
+  offerNote: { marginTop: 10, marginBottom: 2 },
+  offerRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 5 },
+  offerLabel: { flex: 1, fontSize: 13, color: BitcoinColors.textSecondary },
+  offerValue: { flexShrink: 1, fontSize: 13, fontWeight: '700', color: '#FFFFFF', textAlign: 'right' },
+  offerValueStrong: { fontSize: 16, fontWeight: '900', color: BitcoinColors.gold },
+  riskRow: { flexDirection: 'row', gap: 8 },
+  riskChip: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: BitcoinColors.darkBg,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+  },
+  riskChipSelected: { backgroundColor: 'rgba(247, 147, 26, 0.16)', borderColor: 'rgba(247, 147, 26, 0.6)' },
+  riskLabel: { fontSize: 13, fontWeight: '800', color: BitcoinColors.textSecondary },
+  riskLabelSelected: { color: BitcoinColors.orange },
+  riskRate: { fontSize: 18, fontWeight: '900', color: '#FFFFFF', marginTop: 2 },
+  riskAmount: { fontSize: 11, color: BitcoinColors.textMuted, marginTop: 2 },
+  handoverRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 },
+  handoverText: { flex: 1, fontSize: 14, color: '#FFFFFF' },
   stepRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 5 },
   stepBadge: {
     width: 22,

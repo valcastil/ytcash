@@ -174,10 +174,21 @@ A separate way to send cash where **no money passes through YTCash**. Open it fr
    | India | INR | UPI | ₹100 to ₹50,000 |
    | Mexico | MXN | SPEI (CLABE), Mercado Pago | MX$50 to MX$15,000 |
  The app shows the friend and up to 5 available partners within 30 km on a map, nearest first.
-2. The sender picks a partner and one of the payment apps that partner accepts, and sends a request. Both can chat in the app.
-3. The partner accepts and brings their own cash to the friend. The sender passes a 6-digit OTP to the friend, who gives it to the partner after counting the cash.
-4. Entering the OTP reveals the partner's account number to the sender, who pays from their own payment app and enters the reference number.
-5. The partner checks their app and confirms. If no payment arrives, they can report it after 30 minutes.
+2. The sender says how the cash should be handed over, **at the receiver's address** or **at a public place** (optionally suggesting one), picks a partner and one of the payment apps that partner accepts, and sends a request. Both can chat in the app.
+3. The partner replies with an **offer**: a risk level, which sets their commission, and where the hand-over happens (they can switch to a meet-up and name the place).
+
+   | Risk level | Commission (share of the cash amount) |
+   |------------|----------------------------------------|
+   | Low | 5% |
+   | Medium | 10% |
+   | High | 20% |
+
+4. The sender sees the commission and the total to pay and **approves** (or cancels). Nothing goes ahead before that, and the commission cannot change afterwards.
+5. The partner brings their own cash to the address or meeting place. The sender passes a 6-digit OTP to the friend, who gives it to the partner after counting the cash.
+6. Entering the OTP reveals the partner's account number to the sender, who pays the cash amount **plus the commission** from their own payment app and enters the reference number.
+7. The partner checks their app and confirms. If no payment arrives, they can report it after 30 minutes.
+
+The commission goes to the partner in full, paid by the sender on top of the cash amount; YTCash takes nothing. The rates are fixed in `direct_risk_rate()` in the migration.
 
 The cash and the payment are always in the delivery country's currency, so Direct Pay never converts money, and the sender needs a way to pay that country's app (for example their own GCash to pay a Philippine partner). Only partners who accept an app for that country are shown. Delivery inside the UAE is not offered.
 

@@ -25,8 +25,10 @@ import {
   findNearbyPartners,
   formatDirectAmount,
   formatKm,
+  HANDOVER_LABEL,
   PAY_METHOD_LABEL,
   type DirectRegion,
+  type HandoverType,
   type NearbyPartner,
   type PayMethod,
 } from '@/services/direct';
@@ -44,6 +46,8 @@ export default function NewDirectOrderScreen() {
   const [place, setPlace] = useState<AddressMatch | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [handover, setHandover] = useState<HandoverType>('address');
+  const [meetingPlace, setMeetingPlace] = useState('');
 
   const [partners, setPartners] = useState<NearbyPartner[]>([]);
   const [finding, setFinding] = useState(false);
@@ -156,6 +160,8 @@ export default function NewDirectOrderScreen() {
         receiverAddress: address.trim(),
         lat: place.lat,
         lng: place.lng,
+        handoverType: handover,
+        meetingPlace,
       });
       router.replace({ pathname: '/direct/[id]', params: { id: order.id } });
     } catch (e) {
@@ -289,6 +295,44 @@ export default function NewDirectOrderScreen() {
               )
             )}
 
+            <Text style={[styles.label, styles.labelSpaced]}>HOW SHOULD THE CASH BE HANDED OVER?</Text>
+            {(['address', 'meetup'] as const).map((option) => {
+              const isSelected = option === handover;
+              return (
+                <TouchableOpacity
+                  key={option}
+                  style={[styles.handoverRow, isSelected && styles.handoverRowSelected]}
+                  onPress={() => setHandover(option)}
+                  activeOpacity={0.8}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: isSelected }}>
+                  <Ionicons
+                    name={isSelected ? 'radio-button-on' : 'radio-button-off'}
+                    size={18}
+                    color={isSelected ? BitcoinColors.orange : BitcoinColors.textMuted}
+                  />
+                  <View style={styles.flex}>
+                    <Text style={styles.handoverTitle}>{HANDOVER_LABEL[option]}</Text>
+                    <Text style={styles.handoverHint}>
+                      {option === 'address'
+                        ? 'The partner brings the cash to the address above.'
+                        : 'Your friend and the partner meet somewhere public, like a mall, bank or café.'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+            {handover === 'meetup' && (
+              <TextInput
+                style={[styles.input, styles.inputSpaced]}
+                value={meetingPlace}
+                onChangeText={setMeetingPlace}
+                placeholder="Suggest a place (optional)"
+                placeholderTextColor={BitcoinColors.textMuted}
+                maxLength={120}
+              />
+            )}
+
             <PrimaryButton label={finding ? 'Searching…' : 'Find nearest partner'} busy={finding} onPress={handleFindPartners} />
           </View>
         </ScrollView>
@@ -374,8 +418,10 @@ export default function NewDirectOrderScreen() {
                       })}
                     </View>
                     <Text style={styles.noteText}>
-                      You pay {money(numAmount)} to {selected.name} only after your friend has the cash and has
-                      given them the OTP code. You can chat with {selected.name} as soon as the request is sent.
+                      {selected.name} will reply with a commission of 5%, 10% or 20% of the cash amount, depending on how
+                      risky they judge the delivery, and confirm{' '}
+                      {handover === 'meetup' ? 'the meeting place' : 'the hand-over'}. You approve that before they go,
+                      and pay only after your friend has the cash and has given them the OTP code.
                     </Text>
                     <PrimaryButton
                       label={submitting ? 'Sending…' : `Ask ${selected.name} to deliver ${money(numAmount)}`}
@@ -456,6 +502,21 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   inputMultiline: { minHeight: 70, textAlignVertical: 'top' },
+  inputSpaced: { marginTop: 8 },
+  handoverRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: BitcoinColors.darkBg,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+    marginBottom: 8,
+  },
+  handoverRowSelected: { borderColor: 'rgba(247, 147, 26, 0.5)', backgroundColor: 'rgba(247, 147, 26, 0.06)' },
+  handoverTitle: { fontSize: 14, fontWeight: '700', color: '#FFFFFF' },
+  handoverHint: { fontSize: 12, lineHeight: 17, color: BitcoinColors.textSecondary, marginTop: 2 },
   findBtn: {
     flexDirection: 'row',
     alignItems: 'center',

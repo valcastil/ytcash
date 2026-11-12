@@ -113,10 +113,43 @@ export function formatDirectAmount(amount: number, currency: DirectCurrency = 'P
   return `${CURRENCY_SYMBOL[currency] ?? `${currency} `}${number}`;
 }
 
+export type HandoverType = 'address' | 'meetup';
+export const HANDOVER_LABEL: Record<HandoverType, string> = {
+  address: "At the receiver's address",
+  meetup: 'Meet at a public place',
+};
+
+/**
+ * The partner judges how risky a delivery is, and that sets their commission:
+ * a share of the cash amount that the sender pays on top. Rates match the server.
+ */
+export type RiskLevel = 'low' | 'medium' | 'high';
+export const RISK_LEVELS: { value: RiskLevel; label: string; rate: number }[] = [
+  { value: 'low', label: 'Low', rate: 0.05 },
+  { value: 'medium', label: 'Medium', rate: 0.1 },
+  { value: 'high', label: 'High', rate: 0.2 },
+];
+
+export function riskLabel(level: RiskLevel | null): string {
+  const risk = RISK_LEVELS.find((r) => r.value === level);
+  return risk ? `${risk.label} risk, ${Math.round(risk.rate * 100)}%` : '';
+}
+
+export function commissionFor(amount: number, level: RiskLevel): number {
+  const rate = RISK_LEVELS.find((r) => r.value === level)?.rate ?? 0;
+  return Math.round(amount * rate * 100) / 100;
+}
+
+/** What the sender pays the partner: the cash handed over plus the commission. */
+export function directTotal(order: Pick<DirectOrder, 'amount' | 'commission_amount'>): number {
+  return Math.round((order.amount + order.commission_amount) * 100) / 100;
+}
+
 export const DIRECT_CODE_LENGTH = 6;
 
 export type DirectStatus =
   | 'requested'
+  | 'offered'
   | 'accepted'
   | 'delivered'
   | 'paid'
@@ -141,6 +174,13 @@ export interface DirectOrder {
   receiver_lat: number;
   receiver_lng: number;
   distance_km: number | null;
+  handover_type: HandoverType;
+  /** For a meet-up: the public place agreed for the hand-over. */
+  meeting_place: string | null;
+  /** Set by the partner's offer. The commission is paid by the sender on top of `amount`. */
+  risk_level: RiskLevel | null;
+  commission_rate: number;
+  commission_amount: number;
   status: DirectStatus;
   payment_reference: string | null;
   resolution_note: string | null;
@@ -183,11 +223,15 @@ export interface DirectOrderInput {
   receiverAddress: string;
   lat: number;
   lng: number;
+  handoverType: HandoverType;
+  /** Optional suggestion for a meet-up; the partner confirms or changes it. */
+  meetingPlace?: string;
 }
 
 const ORDER_COLUMNS =
   'id, sender_id, partner_id, sender_name, partner_name, amount, currency, method, receiver_name, receiver_phone, ' +
-  'receiver_address, receiver_lat, receiver_lng, distance_km, status, payment_reference, resolution_note, ' +
+  'receiver_address, receiver_lat, receiver_lng, distance_km, handover_type, meeting_place, risk_level, ' +
+  'commission_rate, commission_amount, status, payment_reference, resolution_note, ' +
   'failed_code_attempts, created_at, delivered_at, paid_at';
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -200,6 +244,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   INVALID_RECEIVER: "Check the receiver's name, phone number and address.",
   PARTNER_NOT_AVAILABLE: 'That partner is no longer available. Choose another one.',
   METHOD_NOT_ACCEPTED: 'That partner does not accept this payment app. Choose another app or partner.',
+  INVALID_RISK_LEVEL: 'Choose a risk level: low, medium or high.',
+  INVALID_HANDOVER: 'Choose how the cash will be handed over.',
+  MEETING_PLACE_REQUIRED: 'Name the public place where you will meet.',
   ORDER_NOT_AVAILABLE: 'This delivery has changed and that action is no longer available.',
   REFERENCE_REQUIRED: 'Enter the reference number from your payment app.',
   TOO_EARLY: 'Give the sender 30 minutes to pay before reporting.',
@@ -224,6 +271,11 @@ function toOrder(row: any): DirectOrder {
     amount: Number(row.amount),
     currency: row.currency === 'INR' || row.currency === 'MXN' ? row.currency : 'PHP',
     distance_km: row.distance_km == null ? null : Number(row.distance_km),
+    handover_type: row.handover_type === 'meetup' ? 'meetup' : 'address',
+    meeting_place: row.meeting_place ?? null,
+    risk_level: row.risk_level ?? null,
+    commission_rate: Number(row.commission_rate ?? 0),
+    commission_amount: Number(row.commission_amount ?? 0),
   };
 }
 
@@ -272,6 +324,8 @@ export function createDirectOrder(input: DirectOrderInput): Promise<DirectOrder>
     p_receiver_address: input.receiverAddress,
     p_lat: input.lat,
     p_lng: input.lng,
+    p_handover_type: input.handoverType,
+    p_meeting_place: input.handoverType === 'meetup' ? input.meetingPlace?.trim() || null : null,
   });
 }
 
@@ -315,7 +369,16 @@ export async function getPaymentDetails(orderId: string): Promise<{ account_name
   return error ? null : data ?? null;
 }
 
-export const acceptDirectOrder = (id: string) => orderAction('direct_accept_order', { p_order_id: id });
+/** Partner: name the risk level (which sets the commission) and where the cash is handed over. */
+export const makeDirectOffer = (id: string, risk: RiskLevel, handover: HandoverType, meetingPlace?: string) =>
+  orderAction('direct_make_offer', {
+    p_order_id: id,
+    p_risk_level: risk,
+    p_handover_type: handover,
+    p_meeting_place: handover === 'meetup' ? meetingPlace?.trim() || null : null,
+  });
+/** Sender: agree to the partner's commission and hand-over place. */
+export const approveDirectOffer = (id: string) => orderAction('direct_approve_offer', { p_order_id: id });
 export const declineDirectOrder = (id: string) => orderAction('direct_decline_order', { p_order_id: id });
 export const cancelDirectOrder = (id: string) => orderAction('direct_cancel_order', { p_order_id: id });
 export const confirmDirectPayment = (id: string) => orderAction('direct_confirm_payment', { p_order_id: id });
@@ -398,6 +461,8 @@ export function directStatusLabel(order: DirectOrder, role: 'sender' | 'partner'
   switch (order.status) {
     case 'requested':
       return role === 'sender' ? 'Waiting for partner' : 'New request';
+    case 'offered':
+      return role === 'sender' ? 'Review the offer' : 'Waiting for approval';
     case 'accepted':
       return role === 'sender' ? 'Partner delivering' : 'Deliver cash';
     case 'delivered':
@@ -425,6 +490,7 @@ export function formatKm(km: number | null): string {
 export function directStatusColor(order: DirectOrder): string {
   switch (order.status) {
     case 'requested':
+    case 'offered':
       return BitcoinColors.orange;
     case 'accepted':
       return BitcoinColors.cyan;
