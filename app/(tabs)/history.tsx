@@ -51,20 +51,20 @@ export default function HistoryScreen() {
       ? transactions
       : transactions.filter((tx) => tx.type === filter);
 
-  const filters: { key: FilterType; label: string; icon: any }[] = [
+  const filters: { key: FilterType; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
     { key: 'all', label: 'All', icon: 'layers' },
-    { key: 'send', label: 'Sent', icon: 'arrow-up-right' },
-    { key: 'receive', label: 'Received', icon: 'arrow-down-left' },
+    { key: 'send', label: 'Sent', icon: 'arrow-up' },
+    { key: 'receive', label: 'Received', icon: 'arrow-down' },
     { key: 'scan', label: 'Scanned', icon: 'scan' },
     { key: 'add', label: 'Deposits', icon: 'flash' },
   ];
 
-  function txIcon(type: string): any {
+  function txIcon(type: string): keyof typeof Ionicons.glyphMap {
     switch (type) {
       case 'send':
-        return 'arrow-up-right';
+        return 'arrow-up';
       case 'receive':
-        return 'arrow-down-left';
+        return 'arrow-down';
       case 'scan':
         return 'scan';
       case 'add':

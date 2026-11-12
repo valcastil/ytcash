@@ -95,12 +95,12 @@ export default function HomeScreen() {
     },
   ];
 
-  function txIcon(type: string) {
+  function txIcon(type: string): keyof typeof Ionicons.glyphMap {
     switch (type) {
       case 'send':
-        return 'arrow-up-right';
+        return 'arrow-up';
       case 'receive':
-        return 'arrow-down-left';
+        return 'arrow-down';
       case 'scan':
         return 'scan';
       case 'add':
@@ -387,7 +387,7 @@ export default function HomeScreen() {
             return (
               <View key={tx.id} style={styles.txRow}>
                 <View style={[styles.txIcon, { backgroundColor: color + '1F', borderColor: color + '40' }]}>
-                  <Ionicons name={txIcon(tx.type) as any} size={20} color={color} />
+                  <Ionicons name={txIcon(tx.type)} size={20} color={color} />
                 </View>
                 <View style={styles.txInfo}>
                   <Text style={styles.txType}>
