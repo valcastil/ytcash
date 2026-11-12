@@ -2341,12 +2341,13 @@ grant execute on function public.p2p_direct_confirm_received(uuid) to authentica
 grant execute on function public.p2p_direct_report_unpaid(uuid) to authenticated;
 
 -- ============================================================
--- 13. Direct Pay (GCash, GoTyme, Maya, e& money)
+-- 13. Direct Pay (Philippines, India, Mexico)
 -- No money passes through YTCash here. The sender picks a nearby cash
 -- partner, the partner hands cash to the receiver, the receiver gives the
 -- partner an OTP code, and only then does the sender pay the partner
--- directly from their own GCash, GoTyme or Maya app (Philippines, in PHP) or
--- e& money app (UAE, in AED).
+-- directly from their own payment app. Cash is delivered in the Philippines
+-- (GCash, GoTyme, Maya; PHP), India (UPI; INR) or Mexico (SPEI, Mercado Pago; MXN).
+-- The sender can be anywhere, as long as they can pay with one of those apps.
 --
 -- The partner is paid AFTER handing over cash, so the partner carries the
 -- risk of a sender who does not pay. Senders with an unpaid delivery cannot
@@ -2356,8 +2357,8 @@ grant execute on function public.p2p_direct_report_unpaid(uuid) to authenticated
 -- 13a. Where a partner wants to be paid
 create table if not exists public.partner_payout_accounts (
   user_id uuid references public.users(id) on delete cascade not null,
-  -- gcash, gotyme, maya pay in PHP (Philippines); eandmoney pays in AED (UAE).
-  method text not null check (method in ('gcash', 'gotyme', 'maya', 'eandmoney')),
+  -- Philippines (PHP): gcash, gotyme, maya. India (INR): upi. Mexico (MXN): spei, mercadopago.
+  method text not null check (method in ('gcash', 'gotyme', 'maya', 'upi', 'spei', 'mercadopago')),
   account_name text not null,
   account_number text not null,
   updated_at timestamptz not null default now(),
@@ -2381,8 +2382,8 @@ create table if not exists public.direct_orders (
   partner_name text not null default '',
   amount numeric(12,2) not null check (amount > 0),
   -- The currency of the cash handed over and of the payment; it follows the payment app.
-  currency text not null default 'PHP' check (currency in ('PHP', 'AED')),
-  method text not null check (method in ('gcash', 'gotyme', 'maya', 'eandmoney')),
+  currency text not null default 'PHP' check (currency in ('PHP', 'INR', 'MXN')),
+  method text not null check (method in ('gcash', 'gotyme', 'maya', 'upi', 'spei', 'mercadopago')),
   receiver_name text not null,
   receiver_phone text not null,
   receiver_address text not null,
@@ -2404,16 +2405,21 @@ create table if not exists public.direct_orders (
   completed_at timestamptz,
   closed_at timestamptz
 );
--- Databases created before e& money was added: widen the allowed apps and add the currency.
+-- Databases created by an earlier version of this section: bring the allowed apps and
+-- currencies up to date. (An earlier version offered e& money in AED for deliveries in
+-- the UAE; that option was removed.) NOT VALID applies the rule to new rows only, so any
+-- old order is kept as a record.
 alter table public.direct_orders add column if not exists currency text not null default 'PHP';
 alter table public.direct_orders drop constraint if exists direct_orders_method_check;
 alter table public.direct_orders add constraint direct_orders_method_check
-  check (method in ('gcash', 'gotyme', 'maya', 'eandmoney'));
+  check (method in ('gcash', 'gotyme', 'maya', 'upi', 'spei', 'mercadopago')) not valid;
 alter table public.direct_orders drop constraint if exists direct_orders_currency_check;
-alter table public.direct_orders add constraint direct_orders_currency_check check (currency in ('PHP', 'AED'));
+alter table public.direct_orders add constraint direct_orders_currency_check
+  check (currency in ('PHP', 'INR', 'MXN')) not valid;
+delete from public.partner_payout_accounts where method = 'eandmoney';
 alter table public.partner_payout_accounts drop constraint if exists partner_payout_accounts_method_check;
 alter table public.partner_payout_accounts add constraint partner_payout_accounts_method_check
-  check (method in ('gcash', 'gotyme', 'maya', 'eandmoney'));
+  check (method in ('gcash', 'gotyme', 'maya', 'upi', 'spei', 'mercadopago'));
 
 create index if not exists idx_direct_orders_sender on public.direct_orders(sender_id, created_at desc);
 create index if not exists idx_direct_orders_partner on public.direct_orders(partner_id, created_at desc);
@@ -2503,8 +2509,9 @@ language sql
 immutable
 as $$
   select case
-    when p_method = 'eandmoney' then 'AED'
     when p_method in ('gcash', 'gotyme', 'maya') then 'PHP'
+    when p_method = 'upi' then 'INR'
+    when p_method in ('spei', 'mercadopago') then 'MXN'
   end;
 $$;
 
@@ -2524,8 +2531,23 @@ begin
     raise exception 'NOT_SIGNED_IN';
   end if;
   if public.direct_method_currency(p_method) is null
-     or length(trim(coalesce(p_account_name, ''))) < 2
-     or v_number !~ '^\+?[0-9]{7,20}$' then
+     or length(trim(coalesce(p_account_name, ''))) < 2 then
+    raise exception 'INVALID_ACCOUNT';
+  end if;
+  -- A UPI ID is text and may contain dots and hyphens, so it is only trimmed.
+  if p_method = 'upi' then
+    v_number := lower(trim(coalesce(p_account_number, '')));
+  end if;
+
+  -- Each app identifies an account differently:
+  --   upi          UPI ID, e.g. name@bank
+  --   spei         18-digit CLABE
+  --   mercadopago  mobile number or CLABE
+  --   others       mobile or account number
+  if (p_method = 'upi' and v_number !~ '^[a-z0-9._-]{2,64}@[a-z][a-z0-9]{1,63}$')
+     or (p_method = 'spei' and v_number !~ '^[0-9]{18}$')
+     or (p_method = 'mercadopago' and v_number !~ '^\+?[0-9]{10,18}$')
+     or (p_method in ('gcash', 'gotyme', 'maya') and v_number !~ '^\+?[0-9]{7,20}$') then
     raise exception 'INVALID_ACCOUNT';
   end if;
 
@@ -2549,7 +2571,8 @@ $$;
 
 -- 13d. Sender: who can deliver near this point?
 -- Returns up to 5 available partners within 30 km, nearest first, who accept a
--- payment app in the requested currency (PHP: GCash, GoTyme, Maya; AED: e& money).
+-- payment app in the requested currency (PHP: GCash, GoTyme, Maya; INR: UPI;
+-- MXN: SPEI, Mercado Pago).
 -- Only a first name, an area rounded to about 1 km, and those apps are shared.
 drop function if exists public.direct_find_partners(double precision, double precision);
 
@@ -2644,10 +2667,11 @@ begin
   if v_currency is null then
     raise exception 'METHOD_NOT_ACCEPTED';
   end if;
-  -- Per-delivery limits: PHP 100 to 50,000; AED 10 to 3,500.
+  -- Per-delivery limits: PHP 100 to 50,000; INR 100 to 50,000; MXN 50 to 15,000.
   if v_amount is null
      or (v_currency = 'PHP' and (v_amount < 100 or v_amount > 50000))
-     or (v_currency = 'AED' and (v_amount < 10 or v_amount > 3500)) then
+     or (v_currency = 'INR' and (v_amount < 100 or v_amount > 50000))
+     or (v_currency = 'MXN' and (v_amount < 50 or v_amount > 15000)) then
     raise exception 'INVALID_AMOUNT';
   end if;
   if length(trim(coalesce(p_receiver_name, ''))) < 2

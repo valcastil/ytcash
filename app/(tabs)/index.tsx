@@ -262,7 +262,7 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Direct Pay: pay a partner yourself with GCash, GoTyme, Maya or e& money */}
+      {/* Direct Pay: pay a partner yourself after delivery (Philippines, India, Mexico) */}
       <View style={[styles.section, styles.sectionTight]}>
         <TouchableOpacity
           style={[styles.onlineCard, styles.directCard]}
@@ -276,7 +276,7 @@ export default function HomeScreen() {
           <View style={styles.onlineTextWrap}>
             <Text style={styles.onlineTitle}>Direct Pay</Text>
             <Text style={[styles.onlineSub, styles.p2pSub]}>
-              Find the nearest partner and pay them by GCash, GoTyme, Maya or e& money after delivery
+              Cash to the Philippines, India or Mexico. Find the nearest partner and pay them after delivery
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={BitcoinColors.textMuted} />

@@ -185,11 +185,11 @@ export default function NewDirectOrderScreen() {
                     accessibilityRole="radio"
                     accessibilityState={{ selected: isSelected }}>
                     <Text style={[styles.methodText, isSelected && styles.methodTextSelected]}>{option.label}</Text>
-                    <Text style={styles.regionApps}>{option.apps}</Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
+            <Text style={styles.regionApps}>You will pay the partner by {region.apps}.</Text>
 
             <Text style={[styles.label, styles.labelSpaced]}>CASH YOUR FRIEND GETS ({region.currency})</Text>
             <View style={styles.amountBox}>
@@ -208,7 +208,7 @@ export default function NewDirectOrderScreen() {
               {region.quickAmounts.map((value) => (
                 <TouchableOpacity key={value} style={styles.chip} onPress={() => setAmount(String(value))} activeOpacity={0.75}>
                   <Text style={styles.chipText}>
-                    {region.symbol.length > 1 ? `${region.symbol} ` : region.symbol}
+                    {region.symbol}
                     {value.toLocaleString()}
                   </Text>
                 </TouchableOpacity>
@@ -433,7 +433,7 @@ const styles = StyleSheet.create({
   },
   currencySymbol: { fontSize: 24, fontWeight: '800', color: BitcoinColors.orange, marginRight: 6 },
   currencyCode: { fontSize: 15, marginRight: 8 },
-  regionApps: { fontSize: 10, color: BitcoinColors.textMuted, marginTop: 2 },
+  regionApps: { fontSize: 12, color: BitcoinColors.textSecondary, marginTop: 8 },
   amountInput: { flex: 1, fontSize: 26, fontWeight: '800', color: '#FFFFFF', paddingVertical: 12 },
   chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   chip: {

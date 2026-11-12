@@ -28,6 +28,8 @@ import {
   listDirectOrders,
   listPayoutAccounts,
   METHOD_CURRENCY,
+  PAY_ACCOUNT_FIELD,
+  payoutAccountProblem,
   PAY_METHOD_LABEL,
   PAY_METHODS,
   removePayoutAccount,
@@ -45,7 +47,7 @@ const STEPS = [
   'Enter your friend’s address and pick the nearest partner on the map.',
   'Chat with the partner. They bring the cash to your friend.',
   'Your friend gives the partner the OTP code you sent them.',
-  'Only then do you pay the partner from your GCash, GoTyme or Maya (Philippines) or e& money (UAE).',
+  'Only then do you pay the partner from your own payment app.',
 ];
 
 export default function DirectPayHubScreen() {
@@ -112,8 +114,10 @@ export default function DirectPayHubScreen() {
 
   async function handleSave() {
     if (!editing || saving) return;
-    if (accountName.trim().length < 2 || accountNumber.replace(/[^\d]/g, '').length < 7) {
-      Alert.alert('Check the details', 'Enter the name on the account and its number.');
+    const problem =
+      accountName.trim().length < 2 ? 'Enter the name on the account.' : payoutAccountProblem(editing, accountNumber);
+    if (problem) {
+      Alert.alert('Check the details', problem);
       return;
     }
     setSaving(true);
@@ -241,11 +245,15 @@ export default function DirectPayHubScreen() {
                       <TextInput
                         style={[styles.input, styles.inputSpaced]}
                         value={accountNumber}
-                        onChangeText={(t) => setAccountNumber(t.replace(/[^\d\s+-]/g, ''))}
-                        placeholder={method === 'gotyme' ? 'Account number' : method === 'eandmoney' ? '+971 5X XXX XXXX' : '09XX XXX XXXX'}
+                        onChangeText={(t) =>
+                          setAccountNumber(PAY_ACCOUNT_FIELD[method].kind === 'upi' ? t.trim() : t.replace(/[^\d\s+-]/g, ''))
+                        }
+                        placeholder={PAY_ACCOUNT_FIELD[method].placeholder}
                         placeholderTextColor={BitcoinColors.textMuted}
-                        keyboardType="number-pad"
-                        maxLength={24}
+                        keyboardType={PAY_ACCOUNT_FIELD[method].kind === 'upi' ? 'email-address' : 'number-pad'}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        maxLength={PAY_ACCOUNT_FIELD[method].kind === 'upi' ? 130 : 24}
                       />
                       <View style={styles.formButtons}>
                         {account && (

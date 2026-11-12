@@ -2,28 +2,54 @@ import { BitcoinColors } from '@/constants/theme';
 import { supabase } from '@/services/supabase';
 
 // ─── Direct Pay ─────────────────────────────────────────
-// The sender pays the partner from their own GCash, GoTyme, Maya or e& money app after
+// The sender pays the partner from their own payment app (GCash, GoTyme, Maya, UPI,
+// SPEI or Mercado Pago, depending on the country the cash is delivered in) after
 // the cash has been handed over. No money passes through YTCash; the app finds
 // the partner, carries the OTP and the chat, and records who confirmed what.
 // Rules live in section 13 of supabase/migration.sql.
 
-export type PayMethod = 'gcash' | 'gotyme' | 'maya' | 'eandmoney';
-export const PAY_METHODS: PayMethod[] = ['gcash', 'gotyme', 'maya', 'eandmoney'];
+export type PayMethod = 'gcash' | 'gotyme' | 'maya' | 'upi' | 'spei' | 'mercadopago';
+export const PAY_METHODS: PayMethod[] = ['gcash', 'gotyme', 'maya', 'upi', 'spei', 'mercadopago'];
 export const PAY_METHOD_LABEL: Record<PayMethod, string> = {
   gcash: 'GCash',
   gotyme: 'GoTyme',
   maya: 'Maya',
-  eandmoney: 'e& money',
+  upi: 'UPI',
+  spei: 'SPEI',
+  mercadopago: 'Mercado Pago',
 };
 
 /** The cash handed over and the payment are in the currency of the payment app. */
-export type DirectCurrency = 'PHP' | 'AED';
+export type DirectCurrency = 'PHP' | 'INR' | 'MXN';
 export const METHOD_CURRENCY: Record<PayMethod, DirectCurrency> = {
   gcash: 'PHP',
   gotyme: 'PHP',
   maya: 'PHP',
-  eandmoney: 'AED',
+  upi: 'INR',
+  spei: 'MXN',
+  mercadopago: 'MXN',
 };
+
+/** How each app identifies the account to pay. */
+export const PAY_ACCOUNT_FIELD: Record<PayMethod, { placeholder: string; kind: 'number' | 'upi' }> = {
+  gcash: { placeholder: '09XX XXX XXXX', kind: 'number' },
+  gotyme: { placeholder: 'Account number', kind: 'number' },
+  maya: { placeholder: '09XX XXX XXXX', kind: 'number' },
+  upi: { placeholder: 'UPI ID, e.g. name@bank', kind: 'upi' },
+  spei: { placeholder: '18-digit CLABE', kind: 'number' },
+  mercadopago: { placeholder: 'Mobile number or CLABE', kind: 'number' },
+};
+
+/** Returns what is wrong with an account number, or null if it looks right. The server checks again. */
+export function payoutAccountProblem(method: PayMethod, value: string): string | null {
+  const digits = value.replace(/[^\d]/g, '');
+  if (method === 'upi') {
+    return /^[a-z0-9._-]{2,64}@[a-z][a-z0-9]{1,63}$/i.test(value.trim()) ? null : 'Enter a UPI ID like name@bank.';
+  }
+  if (method === 'spei') return digits.length === 18 ? null : 'A CLABE has 18 digits.';
+  if (method === 'mercadopago') return digits.length >= 10 && digits.length <= 18 ? null : 'Enter a mobile number or CLABE.';
+  return digits.length >= 7 ? null : 'Enter the account or mobile number.';
+}
 
 export interface DirectRegion {
   currency: DirectCurrency;
@@ -36,10 +62,11 @@ export interface DirectRegion {
   quickAmounts: number[];
   phonePlaceholder: string;
   addressPlaceholder: string;
+  /** The payment apps partners in this country accept, for display. */
   apps: string;
 }
 
-/** Where the cash is delivered. Limits match the server (section 13 of the migration). */
+/** Where cash can be delivered. Limits match the server (section 13 of the migration). */
 export const DIRECT_REGIONS: DirectRegion[] = [
   {
     currency: 'PHP',
@@ -54,23 +81,38 @@ export const DIRECT_REGIONS: DirectRegion[] = [
     apps: 'GCash, GoTyme or Maya',
   },
   {
-    currency: 'AED',
-    label: 'UAE',
-    country: 'ae',
-    symbol: 'AED',
-    min: 10,
-    max: 3500,
-    quickAmounts: [50, 100, 200, 500],
-    phonePlaceholder: '+971 5X XXX XXXX',
-    addressPlaceholder: 'Building, street, area, emirate',
-    apps: 'e& money',
+    currency: 'INR',
+    label: 'India',
+    country: 'in',
+    symbol: '₹',
+    min: 100,
+    max: 50000,
+    quickAmounts: [500, 1000, 2000, 5000],
+    phonePlaceholder: '+91 XXXXX XXXXX',
+    addressPlaceholder: 'Street, area, city, state',
+    apps: 'UPI',
+  },
+  {
+    currency: 'MXN',
+    label: 'Mexico',
+    country: 'mx',
+    symbol: 'MX$',
+    min: 50,
+    max: 15000,
+    quickAmounts: [200, 500, 1000, 2000],
+    phonePlaceholder: '+52 XX XXXX XXXX',
+    addressPlaceholder: 'Street, colonia, city, state',
+    apps: 'SPEI or Mercado Pago',
   },
 ];
 
+const CURRENCY_SYMBOL: Record<DirectCurrency, string> = { PHP: '₱', INR: '₹', MXN: 'MX$' };
+
 export function formatDirectAmount(amount: number, currency: DirectCurrency = 'PHP'): string {
   const number = amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return currency === 'AED' ? `AED ${number}` : `₱${number}`;
+  return `${CURRENCY_SYMBOL[currency] ?? `${currency} `}${number}`;
 }
+
 export const DIRECT_CODE_LENGTH = 6;
 
 export type DirectStatus =
@@ -180,7 +222,7 @@ function toOrder(row: any): DirectOrder {
   return {
     ...row,
     amount: Number(row.amount),
-    currency: row.currency === 'AED' ? 'AED' : 'PHP',
+    currency: row.currency === 'INR' || row.currency === 'MXN' ? row.currency : 'PHP',
     distance_km: row.distance_km == null ? null : Number(row.distance_km),
   };
 }

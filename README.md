@@ -14,7 +14,7 @@ A GCash-style digital wallet app for Filipinos with AI-powered multi-currency ca
 - **Fingerprint / Face ID Lock** — Unlocks the app and confirms sending or receiving money
 - **Send from Abroad** — Pay in AED, USD or EUR at a rate and fee held for 10 minutes
 - **Withdrawals** — Cash out wallet balance to GCash, Maya or a bank, paid out by a reviewer
-- **Direct Pay** — Find the nearest partner on a map and pay them yourself by GCash, GoTyme, Maya or e& money after an OTP hand-over
+- **Direct Pay** — Cash delivery in the Philippines, India or Mexico: find the nearest partner on a map and pay them yourself after an OTP hand-over
 - **P2P Cash Delivery** — Send cash to anyone in the Philippines through the closest cash partner, with escrow
 - **Users Online Map** — Live map of signed-in users, with opt-in approximate location
 
@@ -162,23 +162,30 @@ ID photos and selfies for manual review go to the private `kyc-documents` storag
 
 Server tests: `deno test supabase/functions/_tests`.
 
-## Direct Pay (GCash, GoTyme, Maya, e& money)
+## Direct Pay (Philippines, India, Mexico)
 
 A separate way to send cash where **no money passes through YTCash**. Open it from the **Direct Pay** card on the Wallet screen.
 
-1. The sender chooses where the cash is delivered, **Philippines** (pesos; GCash, GoTyme, Maya) or **UAE** (dirhams; e& money), then enters the amount and their friend's address. The app shows the friend and up to 5 available partners within 30 km on a map, nearest first.
+1. The sender, who can be anywhere, chooses where the cash is delivered, then enters the amount and their friend's address:
+
+   | Deliver in | Cash and payment in | Partner is paid by | Per delivery |
+   |------------|--------------------|--------------------|--------------|
+   | Philippines | PHP | GCash, GoTyme, Maya | ₱100 to ₱50,000 |
+   | India | INR | UPI | ₹100 to ₹50,000 |
+   | Mexico | MXN | SPEI (CLABE), Mercado Pago | MX$50 to MX$15,000 |
+ The app shows the friend and up to 5 available partners within 30 km on a map, nearest first.
 2. The sender picks a partner and one of the payment apps that partner accepts, and sends a request. Both can chat in the app.
 3. The partner accepts and brings their own cash to the friend. The sender passes a 6-digit OTP to the friend, who gives it to the partner after counting the cash.
-4. Entering the OTP reveals the partner's account number to the sender, who pays from their own GCash, GoTyme, Maya or e& money app and enters the reference number.
+4. Entering the OTP reveals the partner's account number to the sender, who pays from their own payment app and enters the reference number.
 5. The partner checks their app and confirms. If no payment arrives, they can report it after 30 minutes.
 
-The cash and the payment are always in the same currency (PHP 100 to 50,000, or AED 10 to 3,500 per delivery), so Direct Pay never converts money. Only partners who accept an app in that currency are shown.
+The cash and the payment are always in the delivery country's currency, so Direct Pay never converts money, and the sender needs a way to pay that country's app (for example their own GCash to pay a Philippine partner). Only partners who accept an app for that country are shown. Delivery inside the UAE is not offered.
 
-There is **no integration with GCash, GoTyme, Maya or e& money**: YTCash cannot see or verify the transfer. Both sides confirm by hand.
+There is **no integration with GCash, GoTyme, Maya, UPI, SPEI or Mercado Pago**: YTCash cannot see or verify the transfer. Both sides confirm by hand.
 
 **The partner carries the risk.** They hand over cash before being paid. What the app does about it: the account to pay is fixed when the partner accepts; a sender with a delivery awaiting payment cannot start another; a reported sender is blocked until they pay and the partner confirms; a reviewer can settle a report with `select public.direct_resolve_dispute('<order id>', 'completed' | 'unpaid', 'note');`. Requiring KYC for P2P (`kyc_settings.required_for`) also applies here.
 
-**Becoming a Direct Pay partner:** turn on "Deliver cash near me" in P2P Cash Delivery, then add a GCash, GoTyme, Maya or e& money account under Direct Pay → Deliver cash. Listed partners' first name and area (rounded to about 1 km) are visible to senders searching nearby; account numbers are not, until a delivery is confirmed.
+**Becoming a Direct Pay partner:** turn on "Deliver cash near me" in P2P Cash Delivery, then add the payment account for your country (GCash, GoTyme or Maya; a UPI ID; a CLABE or Mercado Pago number) under Direct Pay → Deliver cash. Listed partners' first name and area (rounded to about 1 km) are visible to senders searching nearby; account numbers are not, until a delivery is confirmed.
 
 **Map:** set `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` (Maps JavaScript API) to use Google Maps. Without a key, or if Google rejects it, the same map is drawn with OpenStreetMap. Partners get an "Open in Google Maps" button for directions either way.
 
