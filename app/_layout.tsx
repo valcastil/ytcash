@@ -76,6 +76,7 @@ function AuthGate() {
       <Stack.Screen name="direct/index" options={{ headerShown: false }} />
       <Stack.Screen name="direct/new" options={{ headerShown: false }} />
       <Stack.Screen name="direct/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="binance/index" options={{ headerShown: false }} />
     </Stack>
   );
 }

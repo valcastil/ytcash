@@ -15,16 +15,22 @@ export async function readRoundedLocation(): Promise<Coords | null> {
     const { status } = await Location.getForegroundPermissionsAsync();
     if (status !== 'granted') return null;
 
+    const servicesEnabled = await Location.hasServicesEnabledAsync().catch(() => false);
+    if (!servicesEnabled) return null;
+
     // A recent cached fix is plenty for a ~1 km area and avoids waking the GPS.
     const last = await Location.getLastKnownPositionAsync({ maxAge: 10 * 60 * 1000 }).catch(
       () => null,
     );
     const position =
-      last ?? (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }));
+      last ??
+      (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }).catch(
+        () => null,
+      ));
+    if (!position) return null;
 
     return roundCoords(position.coords.latitude, position.coords.longitude);
-  } catch (e) {
-    console.warn('Could not read location:', e);
+  } catch {
     return null;
   }
 }
@@ -38,8 +44,7 @@ export async function requestRoundedLocation(): Promise<LocationResult> {
     }
     const coords = await readRoundedLocation();
     return coords ? { status: 'granted', coords } : { status: 'unavailable' };
-  } catch (e) {
-    console.warn('Location request failed:', e);
+  } catch {
     return { status: 'unavailable' };
   }
 }

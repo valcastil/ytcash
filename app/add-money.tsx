@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -7,7 +7,9 @@ import {
   TouchableOpacity,
   Alert,
   ScrollView,
+  Share,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -15,6 +17,15 @@ import { useAuth } from '@/contexts/auth';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { formatCurrency, phpToSats } from '@/constants/currencies';
 import { confirmWithBiometrics } from '@/services/biometrics';
+import {
+  DEFAULT_BINANCE_BTC_ADDRESS,
+  DEFAULT_BINANCE_BTC_NETWORK,
+  fetchBinancePortfolio,
+  getBinanceDepositConfig,
+  withdrawBinanceUsdtToWallet,
+  type BinanceDepositInfo,
+} from '@/services/binance';
+import { fetchExchangeRates } from '@/services/currency-api';
 import { depositFunds, walletErrorMessage } from '@/services/supabase';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
@@ -22,7 +33,35 @@ export default function AddMoneyScreen() {
   const { user, profile, refreshProfile } = useAuth();
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
-  const [selectedMethod, setSelectedMethod] = useState<'card' | 'lightning'>('card');
+  const [selectedMethod, setSelectedMethod] = useState<
+    'card' | 'lightning' | 'binance_btc' | 'binance_usdt'
+  >('card');
+  const [phpPerUsd, setPhpPerUsd] = useState(58.5);
+  const [availableBinanceUsdt, setAvailableBinanceUsdt] = useState<number | null>(null);
+  const [binanceDeposit, setBinanceDeposit] = useState<BinanceDepositInfo>({
+    btcDepositAddress: DEFAULT_BINANCE_BTC_ADDRESS,
+    btcNetwork: DEFAULT_BINANCE_BTC_NETWORK,
+    btcMemo: null,
+    accountLabel: 'YTCash Binance Treasury',
+  });
+
+  useEffect(() => {
+    getBinanceDepositConfig()
+      .then(setBinanceDeposit)
+      .catch(() => {});
+    fetchExchangeRates('PHP')
+      .then((fx) => {
+        if (fx?.rates?.USD) setPhpPerUsd(1 / fx.rates.USD);
+      })
+      .catch(() => {});
+    fetchBinancePortfolio()
+      .then((port) => {
+        if (port.connected) {
+          setAvailableBinanceUsdt(port.availableUsdtToWithdraw ?? port.totalPortfolioUsdt);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const quickAmounts = [100, 500, 1000, 2000, 5000];
   const numAmount = parseFloat(amount) || 0;
@@ -38,7 +77,24 @@ export default function AddMoneyScreen() {
 
     setLoading(true);
     try {
-      await depositFunds(amt, selectedMethod);
+      if (selectedMethod === 'binance_usdt') {
+        const usdtNeeded = Math.round((amt / phpPerUsd) * 10000) / 10000;
+        const res = await withdrawBinanceUsdtToWallet({
+          usdtAmount: usdtNeeded,
+          phpRate: phpPerUsd,
+        });
+        await refreshProfile();
+        Alert.alert(
+          'Binance USDT Credited!',
+          `${res.usdtAmount.toFixed(2)} USDT (@ ₱${res.phpRate.toFixed(2)}) has been converted and ${formatCurrency(
+            res.phpCredited,
+          )} (${satsAmount.toLocaleString()} sats) was added to your YTCash wallet.`,
+          [{ text: 'OK', onPress: () => router.back() }],
+        );
+        return;
+      }
+
+      await depositFunds(amt, selectedMethod === 'card' ? 'card' : 'lightning');
       await refreshProfile();
 
       Alert.alert(
@@ -149,6 +205,92 @@ export default function AddMoneyScreen() {
             color={selectedMethod === 'lightning' ? BitcoinColors.orange : BitcoinColors.textMuted}
           />
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.methodCard, selectedMethod === 'binance_usdt' && styles.methodCardActive]}
+          onPress={() => setSelectedMethod('binance_usdt')}
+          activeOpacity={0.8}>
+          <View style={[styles.methodIconWrap, { backgroundColor: 'rgba(16, 185, 129, 0.16)' }]}>
+            <Ionicons name="swap-horizontal" size={22} color={BitcoinColors.green} />
+          </View>
+          <View style={styles.methodInfo}>
+            <Text style={styles.methodName}>Withdraw USDT from Linked Binance</Text>
+            <Text style={styles.methodSub}>
+              {availableBinanceUsdt !== null
+                ? `Available: $${availableBinanceUsdt.toFixed(2)} USDT • Instant PHP conversion`
+                : 'Convert linked Binance USDT directly into your YTCash PHP wallet'}
+            </Text>
+          </View>
+          <Ionicons
+            name={selectedMethod === 'binance_usdt' ? 'radio-button-on' : 'radio-button-off'}
+            size={20}
+            color={selectedMethod === 'binance_usdt' ? BitcoinColors.orange : BitcoinColors.textMuted}
+          />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.methodCard, selectedMethod === 'binance_btc' && styles.methodCardActive]}
+          onPress={() => setSelectedMethod('binance_btc')}
+          activeOpacity={0.8}>
+          <View style={[styles.methodIconWrap, { backgroundColor: 'rgba(247, 147, 26, 0.18)' }]}>
+            <Ionicons name="logo-bitcoin" size={22} color={BitcoinColors.gold} />
+          </View>
+          <View style={styles.methodInfo}>
+            <Text style={styles.methodName}>Binance Bitcoin (BTC) Deposit</Text>
+            <Text style={styles.methodSub}>
+              Send BTC directly to {binanceDeposit.accountLabel} ({binanceDeposit.btcNetwork})
+            </Text>
+          </View>
+          <Ionicons
+            name={selectedMethod === 'binance_btc' ? 'radio-button-on' : 'radio-button-off'}
+            size={20}
+            color={selectedMethod === 'binance_btc' ? BitcoinColors.orange : BitcoinColors.textMuted}
+          />
+        </TouchableOpacity>
+
+        {selectedMethod === 'binance_btc' && (
+          <View style={styles.binanceDepositBox}>
+            <Text style={styles.binanceDepositTitle}>
+              SEND BITCOIN ({binanceDeposit.btcNetwork.toUpperCase()}) TO:
+            </Text>
+            <View style={styles.binanceQrWrap}>
+              <Image
+                source={{
+                  uri: `https://api.qrserver.com/v1/create-qr-code/?size=180x180&bgcolor=121722&color=F7931A&data=${encodeURIComponent(
+                    `bitcoin:${binanceDeposit.btcDepositAddress}`,
+                  )}`,
+                }}
+                style={styles.binanceQr}
+                contentFit="contain"
+              />
+            </View>
+            <Text style={styles.binanceAddressText} selectable>
+              {binanceDeposit.btcDepositAddress}
+            </Text>
+            <View style={styles.binanceActionRow}>
+              <TouchableOpacity
+                style={styles.binanceShareBtn}
+                onPress={() =>
+                  Share.share({
+                    message: `Binance BTC Deposit Address (${binanceDeposit.btcNetwork}):\n${binanceDeposit.btcDepositAddress}`,
+                  }).catch(() => {})
+                }
+                activeOpacity={0.8}>
+                <Ionicons name="share-social-outline" size={14} color={BitcoinColors.orange} />
+                <Text style={styles.binanceShareText}>Copy / Share Address</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.binanceShareBtn}
+                onPress={() => router.push('/binance')}
+                activeOpacity={0.8}>
+                <Ionicons name="settings-outline" size={14} color={BitcoinColors.gold} />
+                <Text style={[styles.binanceShareText, { color: BitcoinColors.gold }]}>
+                  Manage in Binance Hub
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         <TouchableOpacity
           style={[styles.addBtn, loading && styles.addBtnDisabled]}
@@ -375,5 +517,62 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: BitcoinColors.textMuted,
     marginTop: 14,
+  },
+  binanceDepositBox: {
+    backgroundColor: BitcoinColors.cardElevated,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.4)',
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  binanceDepositTitle: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: BitcoinColors.textSecondary,
+    letterSpacing: 0.8,
+    marginBottom: 10,
+  },
+  binanceQrWrap: {
+    padding: 10,
+    borderRadius: 16,
+    backgroundColor: '#121722',
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.35)',
+    marginBottom: 10,
+  },
+  binanceQr: {
+    width: 150,
+    height: 150,
+  },
+  binanceAddressText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: BitcoinColors.gold,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  binanceActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  binanceShareBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(247, 147, 26, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(247, 147, 26, 0.3)',
+  },
+  binanceShareText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: BitcoinColors.orange,
   },
 });

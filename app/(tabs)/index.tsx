@@ -8,7 +8,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
 import { usePresence } from '@/contexts/presence';
@@ -16,12 +16,17 @@ import { BitcoinColors, Brand } from '@/constants/theme';
 import {
   CURRENCIES,
   formatCurrency,
-  phpToBtc,
-  phpToSats,
   APPROX_PHP_PER_BTC,
+  phpToSats,
 } from '@/constants/currencies';
 import { getTransactions, type Transaction } from '@/services/supabase';
 import { fetchExchangeRates, type ExchangeRates } from '@/services/currency-api';
+import {
+  fetchBinanceLiveTickers,
+  fetchBinancePortfolio,
+  type BinancePortfolioPayload,
+  type BinanceTicker24h,
+} from '@/services/binance';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function HomeScreen() {
@@ -29,36 +34,57 @@ export default function HomeScreen() {
   const { onlineUsers, status: presenceStatus } = usePresence();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [rates, setRates] = useState<ExchangeRates | null>(null);
+  const [btcTicker, setBtcTicker] = useState<BinanceTicker24h | null>(null);
+  const [binancePortfolio, setBinancePortfolio] = useState<BinancePortfolioPayload | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [displayMode, setDisplayMode] = useState<'fiat' | 'sats'>('fiat');
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (force = false) => {
     if (!user) return;
     try {
-      const [txns, exRates] = await Promise.all([
+      const [txns, exRates, tickers, portfolio] = await Promise.all([
         getTransactions(user.id, 5),
         fetchExchangeRates('PHP'),
+        fetchBinanceLiveTickers(force),
+        fetchBinancePortfolio(force),
       ]);
       setTransactions(txns);
       setRates(exRates);
+      setBtcTicker(tickers.find((t) => t.symbol === 'BTCUSDT') ?? null);
+      setBinancePortfolio(portfolio);
     } catch (e) {
       console.error('HomeScreen loadData:', e);
     }
   }, [user]);
 
   useEffect(() => {
-    loadData();
+    loadData(false);
   }, [loadData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadData(false);
+    }, [loadData]),
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([loadData(), refreshProfile()]);
+    await Promise.all([loadData(true), refreshProfile()]);
     setRefreshing(false);
   }, [loadData, refreshProfile]);
 
-  const balance = profile?.balance ?? 0;
-  const btcBalance = phpToBtc(balance);
-  const satsBalance = phpToSats(balance);
+  const walletPhpBalance = profile?.balance ?? 0;
+  const phpPerUsd = rates?.rates?.USD ? 1 / rates.rates.USD : 58.5;
+  const binanceUsdtBalance = binancePortfolio?.connected
+    ? binancePortfolio.totalPortfolioUsdt
+    : 0;
+  const binancePhpBalance = binanceUsdtBalance * phpPerUsd;
+  const balance = walletPhpBalance + binancePhpBalance;
+  const livePhpPerBtc =
+    btcTicker && btcTicker.lastPrice > 0 ? btcTicker.lastPrice * phpPerUsd : APPROX_PHP_PER_BTC;
+  const btcChangePct = btcTicker?.priceChangePercent ?? 3.84;
+  const btcBalance = balance / livePhpPerBtc;
+  const satsBalance = Math.round((balance / livePhpPerBtc) * 100_000_000);
 
   const quickActions = [
     {
@@ -193,6 +219,21 @@ export default function HomeScreen() {
               <Text style={styles.satsPillText}>{satsBalance.toLocaleString()} sats</Text>
             </View>
           </View>
+          {binancePortfolio?.connected && (
+            <TouchableOpacity
+              onPress={() => router.push('/binance')}
+              activeOpacity={0.8}
+              style={{ marginTop: 10 }}>
+              <Text style={{ fontSize: 11, fontWeight: '700', color: BitcoinColors.gold }}>
+                Wallet: {formatCurrency(walletPhpBalance)} • Binance: $
+                {binanceUsdtBalance.toLocaleString('en-US', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}{' '}
+                USDT ({formatCurrency(binancePhpBalance)})
+              </Text>
+            </TouchableOpacity>
+          )}
 
           {/* Card footer CTA buttons */}
           <View style={styles.cardActionRow}>
@@ -283,6 +324,34 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Binance Account & BTC Deposit (OpenClaw Integration) */}
+      <View style={[styles.section, styles.sectionTight]}>
+        <TouchableOpacity
+          style={[styles.onlineCard, styles.p2pCard]}
+          onPress={() => router.push('/binance')}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="Open Binance Exchange portfolio and BTC deposit">
+          <View style={[styles.onlineIconWrap, styles.p2pIconWrap]}>
+            <Ionicons name="stats-chart" size={22} color={BitcoinColors.gold} />
+          </View>
+          <View style={styles.onlineTextWrap}>
+            <Text style={styles.onlineTitle}>Binance Portfolio & BTC Deposit</Text>
+            <Text style={[styles.onlineSub, styles.p2pSub]}>
+              {binancePortfolio?.connected
+                ? `Connected • $${binanceUsdtBalance.toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })} USDT (${formatCurrency(binancePhpBalance)}) • ${
+                    binancePortfolio.spotAssets.length
+                  } asset${binancePortfolio.spotAssets.length === 1 ? '' : 's'}`
+                : 'Connect your Binance API key, view live Spot/Futures holdings, or deposit Bitcoin'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={BitcoinColors.textMuted} />
+        </TouchableOpacity>
+      </View>
+
       {/* Users Online — opens the live map */}
       <View style={[styles.section, styles.sectionTight]}>
         <TouchableOpacity
@@ -327,7 +396,10 @@ export default function HomeScreen() {
         </View>
 
         {/* Featured Bitcoin Spotlight Card */}
-        <View style={styles.btcSpotlightCard}>
+        <TouchableOpacity
+          style={styles.btcSpotlightCard}
+          onPress={() => router.push('/binance')}
+          activeOpacity={0.85}>
           <LinearGradient
             colors={['rgba(247, 147, 26, 0.12)', 'rgba(18, 23, 34, 0.95)']}
             style={styles.btcSpotlightGradient}>
@@ -335,26 +407,39 @@ export default function HomeScreen() {
               <View style={styles.btcHeaderGroup}>
                 <BitcoinBadge size={36} glow={false} />
                 <View style={{ marginLeft: 10 }}>
-                  <Text style={styles.btcTitle}>Bitcoin</Text>
-                  <Text style={styles.btcSubtitle}>BTC / PHP • Benchmark</Text>
+                  <Text style={styles.btcTitle}>Bitcoin (Binance Live)</Text>
+                  <Text style={styles.btcSubtitle}>
+                    BTC / PHP {btcTicker ? `• $${btcTicker.lastPrice.toLocaleString()}` : '• Benchmark'}
+                  </Text>
                 </View>
               </View>
               <View style={styles.changeBadge}>
-                <Ionicons name="trending-up" size={13} color="#10B981" />
-                <Text style={styles.changeBadgeText}>+3.84%</Text>
+                <Ionicons
+                  name={btcChangePct >= 0 ? 'trending-up' : 'trending-down'}
+                  size={13}
+                  color={btcChangePct >= 0 ? '#10B981' : BitcoinColors.red}
+                />
+                <Text
+                  style={[
+                    styles.changeBadgeText,
+                    btcChangePct < 0 && { color: BitcoinColors.red },
+                  ]}>
+                  {btcChangePct >= 0 ? '+' : ''}
+                  {btcChangePct.toFixed(2)}%
+                </Text>
               </View>
             </View>
 
             <View style={styles.btcPriceRow}>
               <Text style={styles.btcPrice}>
-                {formatCurrency(APPROX_PHP_PER_BTC, 'PHP')}
+                {formatCurrency(livePhpPerBtc, 'PHP')}
               </Text>
               <Text style={styles.satsExchangeTag}>
-                1 PHP ≈ {(100000000 / APPROX_PHP_PER_BTC).toFixed(1)} sats
+                1 PHP ≈ {(100000000 / livePhpPerBtc).toFixed(1)} sats
               </Text>
             </View>
           </LinearGradient>
-        </View>
+        </TouchableOpacity>
 
         {/* Global FX Rates */}
         <View style={styles.ratesContainer}>

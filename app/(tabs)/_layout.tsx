@@ -10,9 +10,12 @@ import { BitcoinColors } from '@/constants/theme';
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
 
-  // Dynamic bottom padding to safely clear Android gesture/3-button navigation and iOS home indicator
-  const bottomPadding = Math.max(insets.bottom, Platform.OS === 'ios' ? 24 : 12);
-  const tabBarHeight = 56 + bottomPadding;
+  // Dynamic bottom clearance for Android 3-button / gesture navigation bars and iOS home indicator.
+  // Edge-to-edge on Android can report 0 or a small inset while 3-button / gesture bars occupy ~24-48dp,
+  // so enforce a generous minimum bottom inset plus extra breathing room above the native bar.
+  const systemBottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 36 : 24);
+  const bottomPadding = systemBottomInset + 10;
+  const tabBarHeight = 62 + bottomPadding;
 
   return (
     <Tabs
@@ -34,10 +37,14 @@ export default function TabLayout() {
           shadowOpacity: 0.35,
           shadowRadius: 10,
         },
+        tabBarItemStyle: {
+          paddingVertical: 4,
+        },
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: '700',
           letterSpacing: 0.3,
+          marginTop: 2,
         },
       }}>
       <Tabs.Screen

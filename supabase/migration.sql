@@ -3099,3 +3099,405 @@ begin
     end if;
   end loop;
 end $$;
+
+-- ============================================================
+-- 14. Binance Account Integration & Bitcoin Deposit Address
+-- Allows users to link their own read-only Binance API Key & Secret
+-- (stored server-side, unreadable directly from the client), with
+-- fallback to server env vars in the `binance` Edge Function, plus
+-- a shared Binance Bitcoin deposit address so users can deposit BTC.
+-- ============================================================
+
+-- 14a. Per-user Binance API credentials (server-managed; never readable via table SELECT)
+create table if not exists public.user_binance_keys (
+  user_id uuid references public.users(id) on delete cascade primary key,
+  api_key text not null,
+  api_secret text not null,
+  label text not null default 'My Binance Account',
+  use_testnet boolean not null default false,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.user_binance_keys enable row level security;
+revoke all on public.user_binance_keys from anon, authenticated;
+
+-- 14b. App-wide Binance deposit configuration (BTC deposit address for the shared/owner Binance wallet)
+create table if not exists public.binance_deposit_config (
+  id boolean primary key default true check (id),
+  btc_deposit_address text not null default '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+  btc_network text not null default 'BTC (Bitcoin)',
+  btc_memo text,
+  account_label text not null default 'YTCash Binance Treasury',
+  updated_by uuid references public.users(id),
+  updated_at timestamptz not null default now()
+);
+
+insert into public.binance_deposit_config (id, btc_deposit_address, btc_network, account_label)
+values (true, '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', 'BTC (Bitcoin)', 'YTCash Binance Treasury')
+on conflict (id) do nothing;
+
+alter table public.binance_deposit_config enable row level security;
+revoke all on public.binance_deposit_config from anon, authenticated;
+grant select on public.binance_deposit_config to authenticated;
+
+drop policy if exists "Signed-in users can view Binance deposit config" on public.binance_deposit_config;
+create policy "Signed-in users can view Binance deposit config"
+  on public.binance_deposit_config for select
+  to authenticated
+  using (true);
+
+-- 14c. Save or update the signed-in user's Binance API key & secret
+create or replace function public.binance_save_keys(
+  p_api_key text,
+  p_api_secret text,
+  p_label text default 'My Binance Account',
+  p_use_testnet boolean default false
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_key text := trim(coalesce(p_api_key, ''));
+  v_secret text := trim(coalesce(p_api_secret, ''));
+  v_label text := coalesce(nullif(left(trim(coalesce(p_label, '')), 60), ''), 'My Binance Account');
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  if length(v_key) < 16 or length(v_secret) < 16 then
+    raise exception 'INVALID_BINANCE_KEYS';
+  end if;
+
+  insert into public.user_binance_keys (user_id, api_key, api_secret, label, use_testnet, updated_at)
+  values (v_uid, v_key, v_secret, v_label, coalesce(p_use_testnet, false), now())
+  on conflict (user_id) do update
+    set api_key = excluded.api_key,
+        api_secret = excluded.api_secret,
+        label = excluded.label,
+        use_testnet = excluded.use_testnet,
+        updated_at = now();
+
+  return jsonb_build_object(
+    'has_custom_keys', true,
+    'masked_api_key', left(v_key, 6) || '...' || right(v_key, 4),
+    'label', v_label,
+    'use_testnet', coalesce(p_use_testnet, false),
+    'updated_at', now()
+  );
+end;
+$$;
+
+-- 14d. Remove the signed-in user's custom Binance API keys (reverts to server fallback)
+create or replace function public.binance_remove_keys()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  delete from public.user_binance_keys where user_id = auth.uid();
+end;
+$$;
+
+-- 14e. Check if the signed-in user has custom keys configured (returns masked key only)
+create or replace function public.binance_get_key_status()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_row public.user_binance_keys;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+
+  select * into v_row from public.user_binance_keys where user_id = v_uid;
+  if not found then
+    return jsonb_build_object(
+      'has_custom_keys', false,
+      'masked_api_key', null,
+      'label', null,
+      'use_testnet', false,
+      'updated_at', null
+    );
+  end if;
+
+  return jsonb_build_object(
+    'has_custom_keys', true,
+    'masked_api_key', left(v_row.api_key, 6) || '...' || right(v_row.api_key, 4),
+    'label', v_row.label,
+    'use_testnet', v_row.use_testnet,
+    'updated_at', v_row.updated_at
+  );
+end;
+$$;
+
+-- 14e-2. Retrieve the signed-in user's own Binance credentials for direct API signing
+create or replace function public.binance_get_my_credentials()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_row public.user_binance_keys;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+
+  select * into v_row from public.user_binance_keys where user_id = v_uid;
+  if not found then
+    return null;
+  end if;
+
+  return jsonb_build_object(
+    'api_key', v_row.api_key,
+    'api_secret', v_row.api_secret,
+    'label', v_row.label,
+    'use_testnet', v_row.use_testnet
+  );
+end;
+$$;
+
+-- 14f. Read or update the shared Binance Bitcoin deposit address
+create or replace function public.binance_get_deposit_config()
+returns public.binance_deposit_config
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select * from public.binance_deposit_config where id = true limit 1;
+$$;
+
+create or replace function public.binance_set_deposit_address(
+  p_address text,
+  p_network text default 'BTC (Bitcoin)',
+  p_memo text default null,
+  p_account_label text default 'YTCash Binance Treasury'
+)
+returns public.binance_deposit_config
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_addr text := trim(coalesce(p_address, ''));
+  v_row public.binance_deposit_config;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  if length(v_addr) < 20 or length(v_addr) > 100 then
+    raise exception 'INVALID_BTC_ADDRESS';
+  end if;
+
+  insert into public.binance_deposit_config (id, btc_deposit_address, btc_network, btc_memo, account_label, updated_by, updated_at)
+  values (
+    true,
+    v_addr,
+    coalesce(nullif(left(trim(coalesce(p_network, '')), 40), ''), 'BTC (Bitcoin)'),
+    nullif(left(trim(coalesce(p_memo, '')), 60), ''),
+    coalesce(nullif(left(trim(coalesce(p_account_label, '')), 60), ''), 'YTCash Binance Treasury'),
+    v_uid,
+    now()
+  )
+  on conflict (id) do update
+    set btc_deposit_address = excluded.btc_deposit_address,
+        btc_network = excluded.btc_network,
+        btc_memo = excluded.btc_memo,
+        account_label = excluded.account_label,
+        updated_by = excluded.updated_by,
+        updated_at = now()
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+revoke execute on function public.binance_save_keys(text, text, text, boolean) from public, anon;
+revoke execute on function public.binance_remove_keys() from public, anon;
+revoke execute on function public.binance_get_key_status() from public, anon;
+revoke execute on function public.binance_get_my_credentials() from public, anon;
+revoke execute on function public.binance_get_deposit_config() from public, anon;
+revoke execute on function public.binance_set_deposit_address(text, text, text, text) from public, anon;
+
+grant execute on function public.binance_save_keys(text, text, text, boolean) to authenticated;
+grant execute on function public.binance_remove_keys() to authenticated;
+grant execute on function public.binance_get_key_status() to authenticated;
+grant execute on function public.binance_get_my_credentials() to authenticated;
+grant execute on function public.binance_get_deposit_config() to authenticated;
+grant execute on function public.binance_set_deposit_address(text, text, text, text) to authenticated;
+
+-- 14g. Add USDT deposit address & network to binance_deposit_config
+alter table public.binance_deposit_config
+  add column if not exists usdt_deposit_address text not null default '',
+  add column if not exists usdt_network text not null default 'BSC';
+
+create or replace function public.binance_set_usdt_deposit_address(
+  p_address text,
+  p_network text default 'BSC'
+)
+returns public.binance_deposit_config
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_addr text := trim(coalesce(p_address, ''));
+  v_net text := upper(coalesce(nullif(left(trim(coalesce(p_network, '')), 20), ''), 'BSC'));
+  v_row public.binance_deposit_config;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  if length(v_addr) > 0 and (length(v_addr) < 20 or length(v_addr) > 100) then
+    raise exception 'INVALID_USDT_ADDRESS';
+  end if;
+
+  update public.binance_deposit_config
+    set usdt_deposit_address = v_addr,
+        usdt_network = v_net,
+        updated_by = v_uid,
+        updated_at = now()
+    where id = true
+    returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+-- 14h. Binance USDT -> YTCash PHP Wallet transfers (anti-dupe + audit log)
+create table if not exists public.binance_usdt_transfers (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references public.users(id) on delete cascade not null,
+  usdt_amount numeric(12,4) not null check (usdt_amount > 0),
+  php_rate numeric(12,4) not null check (php_rate > 0),
+  php_credited numeric(12,2) not null check (php_credited > 0),
+  mode text not null check (mode in ('api_withdraw', 'instant_convert')),
+  network text not null default 'BSC',
+  binance_withdraw_id text unique,
+  transaction_id uuid references public.transactions(id),
+  created_at timestamptz not null default now()
+);
+
+alter table public.binance_usdt_transfers enable row level security;
+revoke all on public.binance_usdt_transfers from anon, authenticated;
+grant select on public.binance_usdt_transfers to authenticated;
+
+drop policy if exists "Users can view own Binance USDT transfers" on public.binance_usdt_transfers;
+create policy "Users can view own Binance USDT transfers"
+  on public.binance_usdt_transfers for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+-- 14i. Atomic RPC: Convert & credit Binance USDT to the signed-in user's YTCash PHP wallet
+create or replace function public.binance_withdraw_usdt_to_wallet(
+  p_usdt_amount numeric,
+  p_php_rate numeric,
+  p_mode text default 'instant_convert',
+  p_network text default 'BSC',
+  p_binance_withdraw_id text default null
+)
+returns public.transactions
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_usdt numeric(12,4) := round(p_usdt_amount, 4);
+  v_rate numeric(12,4) := round(p_php_rate, 4);
+  v_php numeric(12,2);
+  v_ref_rate numeric;
+  v_settings public.wallet_settings;
+  v_mode text := case when p_mode = 'api_withdraw' then 'api_withdraw' else 'instant_convert' end;
+  v_wid text := nullif(trim(coalesce(p_binance_withdraw_id, '')), '');
+  v_tx public.transactions;
+begin
+  if v_uid is null then
+    raise exception 'NOT_SIGNED_IN';
+  end if;
+  if v_usdt is null or v_usdt <= 0 or v_usdt > 50000 then
+    raise exception 'INVALID_AMOUNT';
+  end if;
+
+  select * into v_settings from public.wallet_settings;
+  select php_per_unit into v_ref_rate from public.wallet_fx_reference where currency = 'USD';
+  v_ref_rate := coalesce(v_ref_rate, 58.0);
+
+  if v_rate is null or v_rate <= 0
+     or abs(v_rate - v_ref_rate) > v_ref_rate * coalesce(v_settings.fx_tolerance, 0.25) then
+    raise exception 'RATE_OUT_OF_RANGE';
+  end if;
+
+  v_php := round(v_usdt * v_rate, 2);
+  if v_php <= 0 then
+    raise exception 'INVALID_AMOUNT';
+  end if;
+
+  -- Lock the user wallet row
+  perform 1 from public.users where id = v_uid for update;
+  if not found then
+    raise exception 'PROFILE_MISSING';
+  end if;
+
+  -- Prevent duplicate credit of the same Binance withdrawal ID
+  if v_wid is not null and exists (
+    select 1 from public.binance_usdt_transfers where binance_withdraw_id = v_wid
+  ) then
+    raise exception 'DUPLICATE_WITHDRAWAL';
+  end if;
+
+  update public.users set balance = balance + v_php where id = v_uid;
+
+  insert into public.transactions
+    (from_user, to_user, amount, currency, converted_amount, converted_currency, type, status, note)
+  values
+    (
+      null,
+      v_uid,
+      v_php,
+      'PHP',
+      v_usdt,
+      'USDT',
+      'add',
+      'completed',
+      left(
+        'Binance USDT → YTCash (' || trim(to_char(v_usdt, 'FM999990.00##')) || ' USDT @ ₱' ||
+        trim(to_char(v_rate, 'FM999990.00')) ||
+        case when v_wid is not null then ' • ID ' || left(v_wid, 16) else '' end || ')',
+        200
+      )
+    )
+  returning * into v_tx;
+
+  insert into public.binance_usdt_transfers
+    (user_id, usdt_amount, php_rate, php_credited, mode, network, binance_withdraw_id, transaction_id)
+  values
+    (v_uid, v_usdt, v_rate, v_php, v_mode, coalesce(nullif(trim(p_network), ''), 'BSC'), v_wid, v_tx.id);
+
+  return v_tx;
+end;
+$$;
+
+revoke execute on function public.binance_set_usdt_deposit_address(text, text) from public, anon;
+revoke execute on function public.binance_withdraw_usdt_to_wallet(numeric, numeric, text, text, text) from public, anon;
+
+grant execute on function public.binance_set_usdt_deposit_address(text, text) to authenticated;
+grant execute on function public.binance_withdraw_usdt_to_wallet(numeric, numeric, text, text, text) to authenticated;

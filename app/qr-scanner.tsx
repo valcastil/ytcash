@@ -10,10 +10,12 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function QRScannerScreen() {
+  const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
 
@@ -116,7 +118,7 @@ export default function QRScannerScreen() {
         </View>
 
         {/* Bottom Bar */}
-        <View style={styles.bottomBar}>
+        <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 32) + 20 }]}>
           <TouchableOpacity
             style={styles.myQrBtn}
             onPress={() =>

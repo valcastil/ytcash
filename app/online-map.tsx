@@ -159,7 +159,7 @@ export default function OnlineMapScreen() {
       </View>
 
       {/* Bottom panel */}
-      <View style={[styles.panel, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
+      <View style={[styles.panel, { paddingBottom: Math.max(insets.bottom, 32) + 12 }]}>
         <View style={styles.shareRow}>
           <View
             style={[

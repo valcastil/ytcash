@@ -97,7 +97,9 @@ export function PresenceProvider({ children }: { children: React.ReactNode }) {
           // Also runs after an automatic reconnect, which re-announces us.
           if (payloadRef.current) await channel.track(payloadRef.current);
         } else if (state === 'CHANNEL_ERROR' || state === 'TIMED_OUT') {
-          console.warn('Presence channel notice:', err?.message ?? state);
+          if (err?.message) {
+            console.info('Presence channel notice:', err.message);
+          }
           setStatus('error');
         } else if (state === 'CLOSED') {
           setStatus('offline');

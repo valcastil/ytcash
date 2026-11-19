@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -7,16 +7,31 @@ import {
   Alert,
   ScrollView,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
 import { BitcoinColors } from '@/constants/theme';
 import { formatCurrency, phpToSats } from '@/constants/currencies';
+import { fetchBinancePortfolio, type BinancePortfolioPayload } from '@/services/binance';
+import { fetchExchangeRates } from '@/services/currency-api';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function ProfileScreen() {
   const { user, profile, signOut } = useAuth();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [binancePortfolio, setBinancePortfolio] = useState<BinancePortfolioPayload | null>(null);
+  const [phpPerUsd, setPhpPerUsd] = useState(58.5);
+
+  useFocusEffect(
+    useCallback(() => {
+      Promise.all([fetchBinancePortfolio(), fetchExchangeRates('PHP')])
+        .then(([port, fx]) => {
+          setBinancePortfolio(port);
+          if (fx?.rates?.USD) setPhpPerUsd(1 / fx.rates.USD);
+        })
+        .catch(() => {});
+    }, []),
+  );
 
   async function handleLogout() {
     Alert.alert('Sign Out', 'Are you sure you want to sign out of your wallet?', [
@@ -40,6 +55,7 @@ export default function ProfileScreen() {
 
   const menuItems = [
     { icon: 'shield-checkmark-outline' as const, label: 'Identity Verification', badge: profile?.kyc_verified ? 'Verified' : 'Not verified', onPress: () => router.push('/kyc') },
+    { icon: 'stats-chart-outline' as const, label: 'Binance Account & BTC Deposit', badge: 'Connected', onPress: () => router.push('/binance') },
     { icon: 'key-outline' as const, label: 'Backup & Recovery Key', badge: 'Active', onPress: () => {} },
     { icon: 'flash-outline' as const, label: 'Lightning Channels', badge: 'Connected', onPress: () => {} },
     { icon: 'card-outline' as const, label: 'Withdraw to Bank or GCash', onPress: () => router.push('/withdraw') },
@@ -49,7 +65,10 @@ export default function ProfileScreen() {
     { icon: 'document-text-outline' as const, label: 'Legal & Privacy', onPress: () => {} },
   ];
 
-  const balance = profile?.balance ?? 0;
+  const walletBalance = profile?.balance ?? 0;
+  const binanceUsdt = binancePortfolio?.connected ? binancePortfolio.totalPortfolioUsdt : 0;
+  const binancePhp = binanceUsdt * phpPerUsd;
+  const balance = walletBalance + binancePhp;
   const sats = phpToSats(balance);
 
   return (
