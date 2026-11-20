@@ -21,7 +21,7 @@
     "android": {
       "package": "com.ytcash.app",
       "adaptiveIcon": {
-        "backgroundColor": "#F7931A",
+        "backgroundColor": "#0B0E14",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -71,9 +71,9 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#F7931A",
+          "backgroundColor": "#0B0E14",
           "dark": {
-            "backgroundColor": "#E8850D"
+            "backgroundColor": "#0B0E14"
           }
         }
       ],

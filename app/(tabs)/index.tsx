@@ -8,6 +8,7 @@ import {
   RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image } from 'expo-image';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
@@ -155,7 +156,11 @@ export default function HomeScreen() {
       {/* Top Header / Profile Bar */}
       <View style={styles.topBar}>
         <View style={styles.brandingRow}>
-          <BitcoinBadge size={34} glow={false} />
+          <Image
+            source={require('@/assets/images/YTCash_logo_1024.png')}
+            style={styles.headerLogo}
+            contentFit="contain"
+          />
           <View style={styles.brandingTextWrap}>
             <Text style={styles.appName}>
               YT<Text style={styles.appNameAccent}>CASH</Text>
@@ -554,6 +559,11 @@ const styles = StyleSheet.create({
   brandingRow: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  headerLogo: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
   },
   brandingTextWrap: {
     marginLeft: 10,
