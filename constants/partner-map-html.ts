@@ -22,6 +22,7 @@ export interface MapPoint {
 export interface MapPartner extends MapPoint {
   id: string;
   name: string;
+  kind?: 'cashier' | 'user';
 }
 
 export type PartnerMapMessage = {
@@ -53,6 +54,15 @@ export function buildPartnerMapHtml(): string {
     display: flex; align-items: center; justify-content: center;
     font-size: 13px; font-weight: 800; color: #fff;
     background: #475569; border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  .pin.cashier {
+    background: ${c.orange}; color: ${c.void};
+    box-shadow: 0 0 0 6px rgba(247, 147, 26, 0.28), 0 2px 8px rgba(0,0,0,0.5);
+  }
+  .pin.liveuser {
+    width: 18px; height: 18px; font-size: 0;
+    background: ${c.cyan}; border: 2px solid #fff;
+    box-shadow: 0 0 0 6px rgba(6, 182, 212, 0.30), 0 2px 6px rgba(0,0,0,0.45);
   }
   .pin.selected { background: ${c.orange}; color: ${c.void}; transform: scale(1.2); }
   .pin.receiver { background: ${c.green}; color: ${c.void}; border-radius: 8px; }
@@ -103,7 +113,7 @@ export function buildPartnerMapHtml(): string {
     var el = document.getElementById('map');
     var map = new google.maps.Map(el, {
       center: DEFAULT_CENTER, zoom: 5, disableDefaultUI: true, zoomControl: true,
-      gestureHandling: 'greedy', clickableIcons: false, maxZoom: 15,
+      gestureHandling: 'greedy', clickableIcons: false, maxZoom: 18,
       styles: [
         { elementType: 'geometry', stylers: [{ color: '#1a2233' }] },
         { elementType: 'labels.text.stroke', stylers: [{ color: '#0b0e14' }] },
@@ -127,17 +137,18 @@ export function buildPartnerMapHtml(): string {
         }));
       },
       addPartner: function (p, n, selected) {
+        var color = selected ? ${JSON.stringify(c.orange)} : p.kind === 'cashier' ? ${JSON.stringify(c.orange)} : p.kind === 'user' ? ${JSON.stringify(c.cyan)} : '#475569';
         var m = new google.maps.Marker({
-          position: p, map: map, title: p.name, zIndex: selected ? 10 : 6,
-          icon: symbol(selected ? ${JSON.stringify(c.orange)} : '#475569', selected ? 15 : 12),
-          label: { text: String(n), color: selected ? ${JSON.stringify(c.void)} : '#ffffff', fontWeight: '800', fontSize: '12px' }
+          position: p, map: map, title: p.name, zIndex: selected ? 10 : p.kind === 'cashier' ? 8 : 6,
+          icon: symbol(color, selected ? 15 : p.kind === 'user' ? 9 : 12),
+          label: p.kind === 'user' ? undefined : { text: String(n), color: selected || p.kind === 'cashier' ? ${JSON.stringify(c.void)} : '#ffffff', fontWeight: '800', fontSize: '12px' }
         });
         m.addListener('click', function () { send({ type: 'select', id: p.id }); });
         markers.push(m);
       },
       fit: function (points) {
         if (!points.length) return;
-        if (points.length === 1) { map.setCenter(points[0]); map.setZoom(13); return; }
+        if (points.length === 1) { map.setCenter(points[0]); map.setZoom(16); return; }
         var b = new google.maps.LatLngBounds();
         points.forEach(function (pt) { b.extend(pt); });
         map.fitBounds(b, 48);
@@ -161,7 +172,7 @@ export function buildPartnerMapHtml(): string {
       var holder = document.getElementById('map');
       holder.innerHTML = ''; holder.className = '';
       var map = L.map(holder, { zoomControl: true, worldCopyJump: true }).setView([DEFAULT_CENTER.lat, DEFAULT_CENTER.lng], 5);
-      L.tileLayer(${JSON.stringify(MAP_TILE_URL)}, { maxZoom: 15, minZoom: 2, attribution: ${JSON.stringify(MAP_ATTRIBUTION)} }).addTo(map);
+      L.tileLayer(${JSON.stringify(MAP_TILE_URL)}, { maxZoom: 18, minZoom: 2, attribution: ${JSON.stringify(MAP_ATTRIBUTION)} }).addTo(map);
       var layer = L.layerGroup().addTo(map);
       function icon(cls, text) {
         var el = document.createElement('div');
@@ -172,14 +183,21 @@ export function buildPartnerMapHtml(): string {
         clear: function () { layer.clearLayers(); },
         addReceiver: function (r) { L.marker([r.lat, r.lng], { icon: icon('receiver', '★'), zIndexOffset: 500 }).addTo(layer); },
         addPartner: function (p, n, selected) {
-          L.marker([p.lat, p.lng], { icon: icon(selected ? 'selected' : '', String(n)), zIndexOffset: selected ? 1000 : 600 })
+          var cls = selected ? 'selected' : p.kind === 'cashier' ? 'cashier' : p.kind === 'user' ? 'liveuser' : '';
+          var labelText = p.kind === 'user' ? '' : String(n);
+          var marker = L.marker([p.lat, p.lng], { icon: icon(cls, labelText), zIndexOffset: selected ? 1000 : p.kind === 'cashier' ? 750 : 600 })
             .on('click', function () { send({ type: 'select', id: p.id }); })
             .addTo(layer);
+          if (p.name) {
+            var tip = document.createElement('span');
+            tip.textContent = p.name;
+            marker.bindTooltip(tip, { direction: 'top', offset: [0, -10] });
+          }
         },
         fit: function (points) {
           if (!points.length) return;
-          if (points.length === 1) { map.setView([points[0].lat, points[0].lng], 13); return; }
-          map.fitBounds(L.latLngBounds(points.map(function (pt) { return [pt.lat, pt.lng]; })).pad(0.25), { maxZoom: 14 });
+          if (points.length === 1) { map.setView([points[0].lat, points[0].lng], 16); return; }
+          map.fitBounds(L.latLngBounds(points.map(function (pt) { return [pt.lat, pt.lng]; })).pad(0.25), { maxZoom: 16 });
         }
       };
       send({ type: 'ready', provider: 'osm' });

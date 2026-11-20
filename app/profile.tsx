@@ -8,19 +8,24 @@ import {
   ScrollView,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/auth';
 import { BitcoinColors } from '@/constants/theme';
 import { formatCurrency, phpToSats } from '@/constants/currencies';
+import { getCachedAvatar } from '@/services/avatar';
+import { AvatarPickerModal } from '@/components/avatar-picker-modal';
 import { fetchBinancePortfolio, type BinancePortfolioPayload } from '@/services/binance';
 import { fetchExchangeRates } from '@/services/currency-api';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function ProfileScreen() {
-  const { user, profile, signOut } = useAuth();
+  const { user, profile, refreshProfile, signOut } = useAuth();
   const [loggingOut, setLoggingOut] = useState(false);
   const [binancePortfolio, setBinancePortfolio] = useState<BinancePortfolioPayload | null>(null);
   const [phpPerUsd, setPhpPerUsd] = useState(58.5);
+  const [localAvatarUri, setLocalAvatarUri] = useState<string | null>(null);
+  const [avatarModalVisible, setAvatarModalVisible] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -30,8 +35,15 @@ export default function ProfileScreen() {
           if (fx?.rates?.USD) setPhpPerUsd(1 / fx.rates.USD);
         })
         .catch(() => {});
-    }, []),
+      if (user?.id) {
+        getCachedAvatar(user.id).then((cached) => {
+          if (cached) setLocalAvatarUri(cached);
+        });
+      }
+    }, [user?.id]),
   );
+
+  const avatarUri = profile?.avatar_url || localAvatarUri;
 
   async function handleLogout() {
     Alert.alert('Sign Out', 'Are you sure you want to sign out of your wallet?', [
@@ -84,9 +96,44 @@ export default function ProfileScreen() {
 
       {/* Avatar Card */}
       <View style={styles.avatarCard}>
-        <View style={styles.avatarWrapper}>
-          <BitcoinBadge size={72} glow={true} />
-        </View>
+        <TouchableOpacity
+          style={styles.avatarWrapper}
+          activeOpacity={0.8}
+          onPress={() => {
+            if (user?.id) setAvatarModalVisible(true);
+          }}>
+          {avatarUri ? (
+            <Image
+              source={{ uri: avatarUri }}
+              style={{
+                width: 76,
+                height: 76,
+                borderRadius: 38,
+                borderWidth: 2,
+                borderColor: BitcoinColors.orange,
+              }}
+              contentFit="cover"
+            />
+          ) : (
+            <BitcoinBadge size={72} glow={true} />
+          )}
+          <View
+            style={{
+              position: 'absolute',
+              right: 0,
+              bottom: 0,
+              width: 24,
+              height: 24,
+              borderRadius: 12,
+              backgroundColor: BitcoinColors.orange,
+              justifyContent: 'center',
+              alignItems: 'center',
+              borderWidth: 2,
+              borderColor: BitcoinColors.cardBg,
+            }}>
+            <Ionicons name="camera" size={12} color="#07090E" />
+          </View>
+        </TouchableOpacity>
         <Text style={styles.userName}>{profile?.full_name ?? 'Bitcoin Holder'}</Text>
         <Text style={styles.userEmail}>{user?.email ?? ''}</Text>
 
@@ -142,6 +189,18 @@ export default function ProfileScreen() {
       </TouchableOpacity>
 
       <Text style={styles.version}>YTCash • Bitcoin Layer 2 Powered • v1.0.0</Text>
+
+      <AvatarPickerModal
+        visible={avatarModalVisible}
+        userId={user?.id ?? null}
+        hasAvatar={Boolean(avatarUri)}
+        onClose={() => setAvatarModalVisible(false)}
+        onUpdated={async (newUri) => {
+          setLocalAvatarUri(newUri);
+          await refreshProfile();
+        }}
+      />
+
       <View style={{ height: 40 }} />
     </ScrollView>
   );

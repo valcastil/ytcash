@@ -5,10 +5,9 @@
 export const ONLINE_CHANNEL = 'online-users';
 
 /**
- * Coordinates are rounded before they ever leave the device.
- * 2 decimal places ≈ 1.1 km, so a pin shows a neighbourhood, never an address.
+ * Coordinates precision: 4 decimal places ≈ 11 meters for accurate street-level display.
  */
-export const LOCATION_DECIMALS = 2;
+export const LOCATION_DECIMALS = 4;
 
 const MAX_NAME_LENGTH = 24;
 

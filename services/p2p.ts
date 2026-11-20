@@ -285,3 +285,75 @@ export function formatDistance(km: number | null): string {
   if (km === null) return '';
   return km < 1 ? 'under 1 km away' : `about ${Math.round(km)} km away`;
 }
+
+export interface NearbyMobileCashier {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  km: number;
+}
+
+export function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Returns available Mobile Cashiers near a searched location.
+ * Uses p2p_list_mobile_cashiers RPC when deployed, falling back to p2p_nearby_partners.
+ */
+export async function listMobileCashiersNear(
+  lat: number,
+  lng: number,
+  radiusKm: number = 30,
+): Promise<NearbyMobileCashier[]> {
+  try {
+    const { data, error } = await supabase.rpc('p2p_list_mobile_cashiers', {
+      p_lat: lat,
+      p_lng: lng,
+      p_radius_km: radiusKm,
+    });
+    if (error) throw error;
+    return (data ?? []).map((row: any) => ({
+      id: String(row.user_id),
+      name: String(row.display_name || 'Mobile cashier'),
+      lat: Number(row.lat),
+      lng: Number(row.lng),
+      km: Number(row.km),
+    }));
+  } catch {
+    // Fallback to existing p2p_nearby_partners RPC if p2p_list_mobile_cashiers is not yet migrated.
+    const seen = new Map<string, NearbyMobileCashier>();
+    for (const currency of ['PHP', 'INR', 'MXN']) {
+      try {
+        const { data } = await supabase.rpc('p2p_nearby_partners', {
+          p_lat: lat,
+          p_lng: lng,
+          p_currency: currency,
+        });
+        for (const row of data ?? []) {
+          const id = String(row.partner_id);
+          if (!seen.has(id)) {
+            seen.set(id, {
+              id,
+              name: String(row.display_name || 'Mobile cashier'),
+              lat: Number(row.lat),
+              lng: Number(row.lng),
+              km: Number(row.km),
+            });
+          }
+        }
+      } catch {
+        // Ignore individual currency RPC failures.
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => a.km - b.km);
+  }
+}

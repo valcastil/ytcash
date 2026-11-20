@@ -3499,5 +3499,276 @@ $$;
 revoke execute on function public.binance_set_usdt_deposit_address(text, text) from public, anon;
 revoke execute on function public.binance_withdraw_usdt_to_wallet(numeric, numeric, text, text, text) from public, anon;
 
+-- ─── 15. P2P Currency Exchange (Binance-style public meetup marketplace) ──
+
+create table if not exists public.p2p_exchange_offers (
+  id uuid primary key default gen_random_uuid(),
+  maker_id uuid references public.users(id) on delete cascade not null,
+  maker_name text not null,
+  maker_verified boolean not null default false,
+  side text not null check (side in ('sell', 'buy')),
+  offer_currency text not null,
+  local_currency text not null,
+  rate numeric(14,4) not null check (rate > 0),
+  total_amount numeric(14,2) not null check (total_amount > 0),
+  available_amount numeric(14,2) not null check (available_amount >= 0),
+  min_limit numeric(14,2) not null check (min_limit > 0),
+  max_limit numeric(14,2) not null check (max_limit >= min_limit),
+  meetup_location text not null,
+  meetup_city text not null default '',
+  meetup_lat double precision,
+  meetup_lng double precision,
+  notes text not null default '',
+  status text not null default 'active' check (status in ('active', 'paused', 'closed')),
+  completed_trades integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_p2p_exchange_offers_active
+  on public.p2p_exchange_offers(status, offer_currency, local_currency, created_at desc);
+
+alter table public.p2p_exchange_offers enable row level security;
+
+drop policy if exists "Authenticated can view exchange offers" on public.p2p_exchange_offers;
+create policy "Authenticated can view exchange offers"
+  on public.p2p_exchange_offers for select
+  to authenticated
+  using (status = 'active' or auth.uid() = maker_id);
+
+drop policy if exists "Makers manage own exchange offers" on public.p2p_exchange_offers;
+create policy "Makers manage own exchange offers"
+  on public.p2p_exchange_offers for all
+  to authenticated
+  using (auth.uid() = maker_id)
+  with check (auth.uid() = maker_id);
+
+create table if not exists public.p2p_exchange_trades (
+  id uuid primary key default gen_random_uuid(),
+  offer_id uuid references public.p2p_exchange_offers(id) on delete set null,
+  maker_id uuid references public.users(id) on delete cascade not null,
+  taker_id uuid references public.users(id) on delete cascade not null,
+  maker_name text not null,
+  taker_name text not null,
+  side text not null check (side in ('sell', 'buy')),
+  offer_currency text not null,
+  local_currency text not null,
+  rate numeric(14,4) not null check (rate > 0),
+  offer_amount numeric(14,2) not null check (offer_amount > 0),
+  local_amount numeric(14,2) not null check (local_amount > 0),
+  meetup_location text not null,
+  meetup_time text not null default '',
+  meetup_agreed boolean not null default false,
+  maker_confirmed boolean not null default false,
+  taker_confirmed boolean not null default false,
+  status text not null default 'proposed' check (status in ('proposed', 'agreed', 'completed', 'cancelled')),
+  cancel_reason text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_p2p_exchange_trades_participants
+  on public.p2p_exchange_trades(maker_id, taker_id, created_at desc);
+
+alter table public.p2p_exchange_trades enable row level security;
+
+drop policy if exists "Participants can view exchange trades" on public.p2p_exchange_trades;
+create policy "Participants can view exchange trades"
+  on public.p2p_exchange_trades for select
+  to authenticated
+  using (auth.uid() = maker_id or auth.uid() = taker_id);
+
+drop policy if exists "Authenticated can create exchange trades" on public.p2p_exchange_trades;
+create policy "Authenticated can create exchange trades"
+  on public.p2p_exchange_trades for insert
+  to authenticated
+  with check (auth.uid() = taker_id and auth.uid() <> maker_id);
+
+drop policy if exists "Participants can update exchange trades" on public.p2p_exchange_trades;
+create policy "Participants can update exchange trades"
+  on public.p2p_exchange_trades for update
+  to authenticated
+  using (auth.uid() = maker_id or auth.uid() = taker_id)
+  with check (auth.uid() = maker_id or auth.uid() = taker_id);
+
+create table if not exists public.p2p_exchange_messages (
+  id uuid primary key default gen_random_uuid(),
+  trade_id uuid references public.p2p_exchange_trades(id) on delete cascade not null,
+  sender_id uuid references public.users(id) on delete cascade not null,
+  sender_name text not null,
+  body text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_p2p_exchange_messages_trade
+  on public.p2p_exchange_messages(trade_id, created_at asc);
+
+alter table public.p2p_exchange_messages enable row level security;
+
+drop policy if exists "Trade participants can view exchange messages" on public.p2p_exchange_messages;
+create policy "Trade participants can view exchange messages"
+  on public.p2p_exchange_messages for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.p2p_exchange_trades t
+      where t.id = trade_id and (t.maker_id = auth.uid() or t.taker_id = auth.uid())
+    )
+  );
+
+drop policy if exists "Trade participants can send exchange messages" on public.p2p_exchange_messages;
+create policy "Trade participants can send exchange messages"
+  on public.p2p_exchange_messages for insert
+  to authenticated
+  with check (
+    auth.uid() = sender_id
+    and exists (
+      select 1 from public.p2p_exchange_trades t
+      where t.id = trade_id and (t.maker_id = auth.uid() or t.taker_id = auth.uid())
+    )
+  );
+
+-- 16. Mobile Cashiers nearby lookup (for Deliver Cash live map)
+create or replace function public.p2p_list_mobile_cashiers(
+  p_lat double precision,
+  p_lng double precision,
+  p_radius_km double precision default 30
+)
+returns table (
+  user_id uuid,
+  display_name text,
+  lat double precision,
+  lng double precision,
+  km double precision
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    p.user_id,
+    coalesce(nullif(split_part(trim(u.full_name), ' ', 1), ''), 'Mobile cashier') as display_name,
+    round(p.lat::numeric, 2)::double precision as lat,
+    round(p.lng::numeric, 2)::double precision as lng,
+    public.p2p_distance_km(p_lat, p_lng, p.lat, p.lng) as km
+  from public.p2p_partners p
+  join public.users u on u.id = p.user_id
+  where auth.uid() is not null
+    and p_lat between -90 and 90 and p_lng between -180 and 180
+    and p.is_available
+    and public.p2p_distance_km(p_lat, p_lng, p.lat, p.lng) <= greatest(1, least(coalesce(p_radius_km, 30), 100))
+  order by km asc, p.updated_at desc
+  limit 30;
+$$;
+
+revoke execute on function public.p2p_list_mobile_cashiers(double precision, double precision, double precision) from public, anon;
+grant execute on function public.p2p_list_mobile_cashiers(double precision, double precision, double precision) to authenticated;
+
+-- ─── 17. Mobile Cashier Profiles & Cash-for-Transfer Requests ──
+
+create table if not exists public.p2p_mobile_cashiers (
+  user_id uuid references public.users(id) on delete cascade primary key,
+  display_name text not null,
+  lat double precision not null,
+  lng double precision not null,
+  is_available boolean not null default false,
+  accepted_methods text[] not null default '{}',
+  payment_accounts jsonb not null default '[]'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.p2p_mobile_cashiers enable row level security;
+
+drop policy if exists "Authenticated can view available mobile cashiers" on public.p2p_mobile_cashiers;
+create policy "Authenticated can view available mobile cashiers"
+  on public.p2p_mobile_cashiers for select
+  to authenticated
+  using (is_available = true or auth.uid() = user_id);
+
+drop policy if exists "Cashiers manage own mobile cashier profile" on public.p2p_mobile_cashiers;
+create policy "Cashiers manage own mobile cashier profile"
+  on public.p2p_mobile_cashiers for all
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create table if not exists public.p2p_cash_requests (
+  id uuid primary key default gen_random_uuid(),
+  requester_id uuid references public.users(id) on delete cascade not null,
+  requester_name text not null,
+  cashier_id uuid references public.users(id) on delete cascade not null,
+  cashier_name text not null,
+  amount numeric(14,2) not null check (amount > 0),
+  currency text not null default 'PHP',
+  payment_method text not null check (payment_method in ('gcash', 'maya', 'gotyme', 'bank_transfer')),
+  cashier_account_name text not null,
+  cashier_account_number text not null,
+  cashier_bank_name text,
+  location_label text not null,
+  lat double precision not null,
+  lng double precision not null,
+  notes text not null default '',
+  transfer_reference text,
+  status text not null default 'requested' check (status in ('requested', 'on_the_way', 'funds_sent', 'funds_confirmed', 'completed', 'cancelled')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.p2p_cash_requests enable row level security;
+
+drop policy if exists "Participants can view cash requests" on public.p2p_cash_requests;
+create policy "Participants can view cash requests"
+  on public.p2p_cash_requests for select
+  to authenticated
+  using (auth.uid() = requester_id or auth.uid() = cashier_id);
+
+drop policy if exists "Requesters can create cash requests" on public.p2p_cash_requests;
+create policy "Requesters can create cash requests"
+  on public.p2p_cash_requests for insert
+  to authenticated
+  with check (auth.uid() = requester_id and auth.uid() <> cashier_id);
+
+drop policy if exists "Participants can update cash requests" on public.p2p_cash_requests;
+create policy "Participants can update cash requests"
+  on public.p2p_cash_requests for update
+  to authenticated
+  using (auth.uid() = requester_id or auth.uid() = cashier_id)
+  with check (auth.uid() = requester_id or auth.uid() = cashier_id);
+
+create table if not exists public.p2p_cash_request_messages (
+  id uuid primary key default gen_random_uuid(),
+  request_id uuid references public.p2p_cash_requests(id) on delete cascade not null,
+  sender_id uuid references public.users(id) on delete cascade not null,
+  sender_name text not null,
+  body text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.p2p_cash_request_messages enable row level security;
+
+drop policy if exists "Participants can view cash request messages" on public.p2p_cash_request_messages;
+create policy "Participants can view cash request messages"
+  on public.p2p_cash_request_messages for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.p2p_cash_requests r
+      where r.id = request_id and (r.requester_id = auth.uid() or r.cashier_id = auth.uid())
+    )
+  );
+
+drop policy if exists "Participants can send cash request messages" on public.p2p_cash_request_messages;
+create policy "Participants can send cash request messages"
+  on public.p2p_cash_request_messages for insert
+  to authenticated
+  with check (
+    auth.uid() = sender_id
+    and exists (
+      select 1 from public.p2p_cash_requests r
+      where r.id = request_id and (r.requester_id = auth.uid() or r.cashier_id = auth.uid())
+    )
+  );
+
 grant execute on function public.binance_set_usdt_deposit_address(text, text) to authenticated;
 grant execute on function public.binance_withdraw_usdt_to_wallet(numeric, numeric, text, text, text) to authenticated;

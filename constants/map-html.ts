@@ -9,6 +9,7 @@ import { BitcoinColors } from '@/constants/theme';
  * For production traffic, point EXPO_PUBLIC_MAP_TILE_URL at a hosted provider
  * (MapTiler, Stadia, Mapbox, ...) and update MAP_ATTRIBUTION to match.
  */
+export const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 export const MAP_TILE_URL =
   process.env.EXPO_PUBLIC_MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
@@ -100,38 +101,36 @@ export function buildMapHtml(): string {
 <body>
 <div id="map"></div>
 <div id="fallback">The map could not load.<br />Check your internet connection and reopen this screen.</div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 (function () {
+  var KEY = ${JSON.stringify(GOOGLE_MAPS_API_KEY)};
+  var DEFAULT_CENTER = { lat: ${DEFAULT_CENTER[0]}, lng: ${DEFAULT_CENTER[1]} };
+  var backend = null;
+  var lastData = null;
+  var fittedOnce = false;
+
   function send(msg) {
     var text = JSON.stringify(msg);
     if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(text);
     else if (window.parent && window.parent !== window) window.parent.postMessage(text, '*');
   }
 
-  if (!window.L) {
-    document.getElementById('map').style.display = 'none';
-    document.getElementById('fallback').style.display = 'flex';
-    send({ type: 'error' });
-    return;
+  function loadScript(src, integrity, onload, onerror) {
+    var s = document.createElement('script');
+    s.src = src;
+    if (integrity) { s.integrity = integrity; s.crossOrigin = ''; }
+    s.onload = onload; s.onerror = onerror;
+    document.head.appendChild(s);
   }
 
-  var map = L.map('map', { zoomControl: true, attributionControl: true, worldCopyJump: true })
-    .setView(${JSON.stringify(DEFAULT_CENTER)}, ${DEFAULT_ZOOM});
-  L.tileLayer(${JSON.stringify(MAP_TILE_URL)}, {
-    maxZoom: 13, // pins are only accurate to ~1 km, so street-level zoom would mislead
-    minZoom: 2,
-    attribution: ${JSON.stringify(MAP_ATTRIBUTION)}
-  }).addTo(map);
-
-  var layer = L.layerGroup().addTo(map);
-  var bounds = null;
-  var fittedOnce = false;
-
-  function fit() {
-    if (!bounds) { map.setView(${JSON.stringify(DEFAULT_CENTER)}, ${DEFAULT_ZOOM}); return; }
-    map.fitBounds(bounds.pad(0.3), { maxZoom: 11 });
+  function groupUsers(users) {
+    var groups = {};
+    (users || []).forEach(function (u) {
+      if (typeof u.lat !== 'number' || typeof u.lng !== 'number') return;
+      var key = u.lat + ',' + u.lng;
+      (groups[key] = groups[key] || []).push(u);
+    });
+    return Object.keys(groups).map(function (k) { return groups[k]; });
   }
 
   // Names come from other users' devices, so they are only ever set as text.
@@ -161,55 +160,153 @@ export function buildMapHtml(): string {
     return root;
   }
 
-  function setUsers(users, meId) {
-    layer.clearLayers();
-    bounds = null;
+  function render() {
+    if (!backend || !lastData) return;
+    backend.setUsers(lastData.users, lastData.meId);
+  }
 
-    // Rounded coordinates mean nearby users share a point: draw one pin with a count.
-    var groups = {};
-    (users || []).forEach(function (u) {
-      if (typeof u.lat !== 'number' || typeof u.lng !== 'number') return;
-      var key = u.lat + ',' + u.lng;
-      (groups[key] = groups[key] || []).push(u);
+  // ── Google Maps ──
+  function startGoogle() {
+    var el = document.getElementById('map');
+    var map = new google.maps.Map(el, {
+      center: DEFAULT_CENTER, zoom: ${DEFAULT_ZOOM}, disableDefaultUI: true, zoomControl: true,
+      gestureHandling: 'greedy', clickableIcons: false, maxZoom: 18,
+      styles: [
+        { elementType: 'geometry', stylers: [{ color: '#1a2233' }] },
+        { elementType: 'labels.text.stroke', stylers: [{ color: '#0b0e14' }] },
+        { elementType: 'labels.text.fill', stylers: [{ color: '#94a3b8' }] },
+        { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#2a3550' }] },
+        { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0b1220' }] },
+        { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+        { featureType: 'transit', stylers: [{ visibility: 'off' }] }
+      ]
     });
+    var markers = [];
+    var points = [];
+    var infoWindow = new google.maps.InfoWindow();
 
-    Object.keys(groups).forEach(function (key) {
-      var group = groups[key];
-      var hasMe = group.some(function (u) { return u.id === meId; });
-      var el = document.createElement('div');
-      el.className = 'pin' + (hasMe ? ' me' : '');
-      el.innerHTML = '<div class="pulse"></div><div class="dot"></div>';
-      if (group.length > 1) {
-        var count = document.createElement('div');
-        count.className = 'count';
-        count.textContent = String(group.length);
-        el.appendChild(count);
+    backend = {
+      fit: function () {
+        if (!points.length) { map.setCenter(DEFAULT_CENTER); map.setZoom(${DEFAULT_ZOOM}); return; }
+        if (points.length === 1) { map.setCenter(points[0]); map.setZoom(16); return; }
+        var b = new google.maps.LatLngBounds();
+        points.forEach(function (pt) { b.extend(pt); });
+        map.fitBounds(b, 48);
+      },
+      setUsers: function (users, meId) {
+        markers.forEach(function (m) { m.setMap(null); });
+        markers = [];
+        points = [];
+        var groups = groupUsers(users);
+        groups.forEach(function (group) {
+          var hasMe = group.some(function (u) { return u.id === meId; });
+          var pos = { lat: group[0].lat, lng: group[0].lng };
+          points.push(pos);
+          var m = new google.maps.Marker({
+            position: pos,
+            map: map,
+            zIndex: hasMe ? 10 : 5,
+            icon: {
+              path: google.maps.SymbolPath.CIRCLE,
+              scale: hasMe ? 10 : 8,
+              fillColor: hasMe ? ${JSON.stringify(c.green)} : ${JSON.stringify(c.orange)},
+              fillOpacity: 1,
+              strokeColor: '#ffffff',
+              strokeWeight: 2.5
+            },
+            label: group.length > 1 ? { text: String(group.length), color: '#07090E', fontWeight: '800', fontSize: '11px' } : undefined
+          });
+          m.addListener('click', function () {
+            infoWindow.setContent(popupFor(group, meId));
+            infoWindow.open(map, m);
+          });
+          markers.push(m);
+        });
+        if (points.length && !fittedOnce) { fittedOnce = true; backend.fit(); }
       }
-      var latlng = L.latLng(group[0].lat, group[0].lng);
-      L.marker(latlng, {
-        icon: L.divIcon({ html: el.outerHTML, className: '', iconSize: [26, 26], iconAnchor: [13, 13] })
-      }).bindPopup(popupFor(group, meId), { closeButton: true, offset: [0, -6] }).addTo(layer);
-      bounds = bounds ? bounds.extend(latlng) : L.latLngBounds(latlng, latlng);
-    });
+    };
+    send({ type: 'ready', provider: 'google' });
+    render();
+  }
 
-    // Frame everyone the first time pins arrive; afterwards leave the user's view alone.
-    if (bounds && !fittedOnce) { fittedOnce = true; fit(); }
+  // ── OpenStreetMap (Leaflet) fallback ──
+  var leafletStarted = false;
+  function startLeaflet() {
+    if (leafletStarted) return;
+    leafletStarted = true;
+    backend = null;
+    loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=', function () {
+      var map = L.map('map', { zoomControl: true, attributionControl: true, worldCopyJump: true })
+        .setView(${JSON.stringify(DEFAULT_CENTER)}, ${DEFAULT_ZOOM});
+      L.tileLayer(${JSON.stringify(MAP_TILE_URL)}, {
+        maxZoom: 18,
+        minZoom: 2,
+        attribution: ${JSON.stringify(MAP_ATTRIBUTION)}
+      }).addTo(map);
+      var layer = L.layerGroup().addTo(map);
+      var bounds = null;
+
+      backend = {
+        fit: function () {
+          if (!bounds) { map.setView(${JSON.stringify(DEFAULT_CENTER)}, ${DEFAULT_ZOOM}); return; }
+          map.fitBounds(bounds.pad(0.3), { maxZoom: 16 });
+        },
+        setUsers: function (users, meId) {
+          layer.clearLayers();
+          bounds = null;
+          var groups = groupUsers(users);
+          groups.forEach(function (group) {
+            var hasMe = group.some(function (u) { return u.id === meId; });
+            var el = document.createElement('div');
+            el.className = 'pin' + (hasMe ? ' me' : '');
+            el.innerHTML = '<div class="pulse"></div><div class="dot"></div>';
+            if (group.length > 1) {
+              var count = document.createElement('div');
+              count.className = 'count';
+              count.textContent = String(group.length);
+              el.appendChild(count);
+            }
+            var latlng = L.latLng(group[0].lat, group[0].lng);
+            L.marker(latlng, {
+              icon: L.divIcon({ html: el.outerHTML, className: '', iconSize: [26, 26], iconAnchor: [13, 13] })
+            }).bindPopup(popupFor(group, meId), { closeButton: true, offset: [0, -6] }).addTo(layer);
+            bounds = bounds ? bounds.extend(latlng) : L.latLngBounds(latlng, latlng);
+          });
+          if (bounds && !fittedOnce) { fittedOnce = true; backend.fit(); }
+        }
+      };
+      send({ type: 'ready', provider: 'osm' });
+      render();
+    }, function () {
+      document.getElementById('map').style.display = 'none';
+      document.getElementById('fallback').style.display = 'flex';
+      send({ type: 'error' });
+    });
   }
 
   function handle(msg) {
     if (!msg || typeof msg !== 'object') return;
-    if (msg.type === 'users') setUsers(msg.users, msg.meId);
-    else if (msg.type === 'fit') fit();
+    if (msg.type === 'users') {
+      lastData = { users: msg.users, meId: msg.meId };
+      render();
+    } else if (msg.type === 'fit' && backend) {
+      backend.fit();
+    }
   }
 
-  // Native: called through injectJavaScript.  Web: arrives by postMessage from the parent page.
   window.YTMap = { handle: handle };
   window.addEventListener('message', function (event) {
     if (window.ReactNativeWebView || event.source !== window.parent) return;
     try { handle(typeof event.data === 'string' ? JSON.parse(event.data) : event.data); } catch (e) {}
   });
 
-  send({ type: 'ready' });
+  if (KEY) {
+    window.__ytGoogleReady = startGoogle;
+    window.gm_authFailure = startLeaflet;
+    loadScript('https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(KEY) + '&callback=__ytGoogleReady&v=weekly', null, null, startLeaflet);
+  } else {
+    startLeaflet();
+  }
 })();
 </script>
 </body>

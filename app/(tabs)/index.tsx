@@ -22,12 +22,14 @@ import {
 } from '@/constants/currencies';
 import { getTransactions, type Transaction } from '@/services/supabase';
 import { fetchExchangeRates, type ExchangeRates } from '@/services/currency-api';
+import { getCachedAvatar } from '@/services/avatar';
 import {
   fetchBinanceLiveTickers,
   fetchBinancePortfolio,
   type BinancePortfolioPayload,
   type BinanceTicker24h,
 } from '@/services/binance';
+import { AvatarPickerModal } from '@/components/avatar-picker-modal';
 import { BitcoinBadge } from '@/components/bitcoin-badge';
 
 export default function HomeScreen() {
@@ -37,8 +39,19 @@ export default function HomeScreen() {
   const [rates, setRates] = useState<ExchangeRates | null>(null);
   const [btcTicker, setBtcTicker] = useState<BinanceTicker24h | null>(null);
   const [binancePortfolio, setBinancePortfolio] = useState<BinancePortfolioPayload | null>(null);
+  const [localAvatarUri, setLocalAvatarUri] = useState<string | null>(null);
+  const [avatarModalVisible, setAvatarModalVisible] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [displayMode, setDisplayMode] = useState<'fiat' | 'sats'>('fiat');
+
+  useEffect(() => {
+    if (!user?.id) return;
+    getCachedAvatar(user.id).then((cached) => {
+      if (cached) setLocalAvatarUri(cached);
+    });
+  }, [user?.id]);
+
+  const avatarUri = profile?.avatar_url || localAvatarUri;
 
   const loadData = useCallback(async (force = false) => {
     if (!user) return;
@@ -172,10 +185,28 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        <TouchableOpacity onPress={() => router.push('/profile')} style={styles.avatarBtn}>
+        <TouchableOpacity
+          onPress={() => {
+            if (!user?.id) {
+              router.push('/profile');
+              return;
+            }
+            setAvatarModalVisible(true);
+          }}
+          style={styles.avatarBtn}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel="Add or change profile photo">
           <LinearGradient colors={[BitcoinColors.orange, '#9945FF']} style={styles.avatarGradient}>
-            <Ionicons name="person" size={18} color="#FFFFFF" />
+            {avatarUri ? (
+              <Image source={{ uri: avatarUri }} style={styles.avatarImage} contentFit="cover" />
+            ) : (
+              <Ionicons name="person" size={18} color="#FFFFFF" />
+            )}
           </LinearGradient>
+          <View style={styles.avatarBadge}>
+            <Ionicons name={avatarUri ? 'camera' : 'add'} size={10} color="#07090E" />
+          </View>
         </TouchableOpacity>
       </View>
 
@@ -294,14 +325,14 @@ export default function HomeScreen() {
           onPress={() => router.push('/p2p')}
           activeOpacity={0.8}
           accessibilityRole="button"
-          accessibilityLabel="Open P2P cash delivery">
+          accessibilityLabel="Open Peer to Peer (P2P)">
           <View style={[styles.onlineIconWrap, styles.p2pIconWrap]}>
             <Ionicons name="people" size={22} color={BitcoinColors.orange} />
           </View>
           <View style={styles.onlineTextWrap}>
-            <Text style={styles.onlineTitle}>P2P Cash Delivery</Text>
+            <Text style={styles.onlineTitle}>Peer to Peer (P2P)</Text>
             <Text style={[styles.onlineSub, styles.p2pSub]}>
-              Send cash through the partner closest to your receiver
+              Exchange USD &amp; currencies for local cash at public meetups
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={BitcoinColors.textMuted} />
@@ -315,14 +346,14 @@ export default function HomeScreen() {
           onPress={() => router.push('/direct')}
           activeOpacity={0.8}
           accessibilityRole="button"
-          accessibilityLabel="Open Direct Pay">
+          accessibilityLabel="Open Transfer Assets">
           <View style={[styles.onlineIconWrap, styles.directIconWrap]}>
             <Ionicons name="map" size={22} color={BitcoinColors.cyan} />
           </View>
           <View style={styles.onlineTextWrap}>
-            <Text style={styles.onlineTitle}>Direct Pay</Text>
+            <Text style={styles.onlineTitle}>Transfer Assets</Text>
             <Text style={[styles.onlineSub, styles.p2pSub]}>
-              Cash to the Philippines, India or Mexico. Find the nearest partner and pay them after delivery
+              Send &amp; receive Cryptocurrency, Tokens (QR deposit/withdraw) &amp; YTCash Coin Stocks
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={BitcoinColors.textMuted} />
@@ -535,6 +566,18 @@ export default function HomeScreen() {
         )}
       </View>
 
+      <AvatarPickerModal
+        visible={avatarModalVisible}
+        userId={user?.id ?? null}
+        hasAvatar={Boolean(avatarUri)}
+        onClose={() => setAvatarModalVisible(false)}
+        onUpdated={async (newUri) => {
+          setLocalAvatarUri(newUri);
+          await refreshProfile();
+        }}
+        onOpenProfile={() => router.push('/profile')}
+      />
+
       <View style={{ height: 40 }} />
     </ScrollView>
   );
@@ -597,15 +640,35 @@ const styles = StyleSheet.create({
   },
   avatarBtn: {
     padding: 2,
+    position: 'relative',
   },
   avatarGradient: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.25)',
+    overflow: 'hidden',
+  },
+  avatarImage: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+  },
+  avatarBadge: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: BitcoinColors.orange,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: BitcoinColors.darkBg,
   },
   heroCardContainer: {
     paddingHorizontal: 20,

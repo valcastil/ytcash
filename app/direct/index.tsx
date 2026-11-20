@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -6,83 +6,91 @@ import {
   Platform,
   RefreshControl,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { ScreenHeader } from '@/components/screen-header';
 import { BitcoinColors, Brand } from '@/constants/theme';
 import { useAuth } from '@/contexts/auth';
 import {
-  directErrorMessage,
-  directStatusColor,
-  directStatusLabel,
-  formatDirectAmount,
-  isDirectOpen,
-  listDirectOrders,
-  listPayoutAccounts,
-  METHOD_CURRENCY,
-  PAY_ACCOUNT_FIELD,
-  payoutAccountProblem,
-  PAY_METHOD_LABEL,
-  PAY_METHODS,
-  removePayoutAccount,
-  savePayoutAccount,
-  subscribeToDirect,
-  type DirectOrder,
-  type PayMethod,
-  type PayoutAccount,
-} from '@/services/direct';
-import { getPartnerProfile } from '@/services/p2p';
+  ASSETS_CATALOG,
+  claimDailyCoinStockReward,
+  defaultDepositAddress,
+  getAssetBalances,
+  getAssetTransfers,
+  getCustomAddresses,
+  recordAssetWithdrawal,
+  saveCustomAddress,
+  type AssetCategory,
+  type AssetDefinition,
+  type AssetTransferRecord,
+} from '@/services/assets';
 
-type Tab = 'send' | 'deliver';
+type DirectTab = 'send' | 'receive';
 
-const STEPS = [
-  'Enter your friend’s address and pick the nearest partner on the map.',
-  'Chat with the partner. They bring the cash to your friend.',
-  'Your friend gives the partner the OTP code you sent them.',
-  'Only then do you pay the partner from your own payment app.',
+const CATEGORY_OPTIONS: { id: AssetCategory; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { id: 'crypto', label: 'Cryptocurrency', icon: 'logo-bitcoin' },
+  { id: 'tokens', label: 'Tokens', icon: 'layers-outline' },
+  { id: 'coin_stocks', label: 'Coin Stocks', icon: 'trending-up' },
 ];
 
-export default function DirectPayHubScreen() {
-  const { user, profile } = useAuth();
-  const userId = user?.id ?? null;
+export default function DirectPayAssetsScreen() {
+  const { user } = useAuth();
+  const userId = user?.id ?? 'guest-user';
 
-  const [tab, setTab] = useState<Tab>('send');
-  const [sent, setSent] = useState<DirectOrder[]>([]);
-  const [assigned, setAssigned] = useState<DirectOrder[]>([]);
-  const [accounts, setAccounts] = useState<PayoutAccount[]>([]);
-  const [available, setAvailable] = useState(false);
+  const [tab, setTab] = useState<DirectTab>('receive');
+  const [category, setCategory] = useState<AssetCategory>('crypto');
+  const [selectedAssetId, setSelectedAssetId] = useState<string>('btc');
+  const [selectedNetwork, setSelectedNetwork] = useState<string>('Bitcoin (SegWit)');
+
+  const [balances, setBalances] = useState<Record<string, number>>({});
+  const [customAddresses, setCustomAddresses] = useState<Record<string, string>>({});
+  const [transfers, setTransfers] = useState<AssetTransferRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [editing, setEditing] = useState<PayMethod | null>(null);
-  const [accountName, setAccountName] = useState('');
-  const [accountNumber, setAccountNumber] = useState('');
-  const [saving, setSaving] = useState(false);
+  // Receive / custom address editing
+  const [editingAddress, setEditingAddress] = useState(false);
+  const [customAddrInput, setCustomAddrInput] = useState('');
+
+  // Send / withdraw form
+  const [recipientAddress, setRecipientAddress] = useState('');
+  const [sendAmountText, setSendAmountText] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const categoryAssets = useMemo(
+    () => ASSETS_CATALOG.filter((a) => a.category === category),
+    [category],
+  );
+
+  const selectedAsset: AssetDefinition = useMemo(
+    () => categoryAssets.find((a) => a.id === selectedAssetId) ?? categoryAssets[0],
+    [categoryAssets, selectedAssetId],
+  );
+
+  const activeNetwork = selectedAsset.networks.includes(selectedNetwork)
+    ? selectedNetwork
+    : selectedAsset.networks[0];
 
   const load = useCallback(async () => {
-    if (!userId) return;
     try {
-      const [orders, payout, partner] = await Promise.all([
-        listDirectOrders(userId),
-        listPayoutAccounts(userId),
-        getPartnerProfile(userId).catch(() => null),
+      const [bal, addrs, hist] = await Promise.all([
+        getAssetBalances(userId),
+        getCustomAddresses(userId),
+        getAssetTransfers(userId),
       ]);
-      setSent(orders.sent);
-      setAssigned(orders.assigned);
-      setAccounts(payout);
-      setAvailable(partner?.is_available ?? false);
-      setLoadError(null);
-    } catch (e) {
-      setLoadError(directErrorMessage(e));
+      setBalances(bal);
+      setCustomAddresses(addrs);
+      setTransfers(hist);
     } finally {
       setLoading(false);
     }
@@ -94,67 +102,132 @@ export default function DirectPayHubScreen() {
     }, [load]),
   );
 
-  useEffect(() => {
-    if (!userId) return;
-    return subscribeToDirect(`hub-${userId}`, load);
-  }, [userId, load]);
-
   async function onRefresh() {
     setRefreshing(true);
     await load();
     setRefreshing(false);
   }
 
-  function startEdit(method: PayMethod) {
-    const existing = accounts.find((a) => a.method === method);
-    setAccountName(existing?.account_name ?? profile?.full_name ?? '');
-    setAccountNumber(existing?.account_number ?? '');
-    setEditing(method);
+  function handleSelectCategory(next: AssetCategory) {
+    setCategory(next);
+    const first = ASSETS_CATALOG.find((a) => a.category === next)!;
+    setSelectedAssetId(first.id);
+    setSelectedNetwork(first.networks[0]);
+    setEditingAddress(false);
+    setSendAmountText('');
+    setRecipientAddress('');
   }
 
-  async function handleSave() {
-    if (!editing || saving) return;
-    const problem =
-      accountName.trim().length < 2 ? 'Enter the name on the account.' : payoutAccountProblem(editing, accountNumber);
-    if (problem) {
-      Alert.alert('Check the details', problem);
+  function handleSelectAsset(asset: AssetDefinition) {
+    setSelectedAssetId(asset.id);
+    setSelectedNetwork(asset.networks[0]);
+    setEditingAddress(false);
+    setSendAmountText('');
+  }
+
+  const addrKey = `${selectedAsset.symbol}_${activeNetwork}`;
+  const depositAddress =
+    customAddresses[addrKey] || defaultDepositAddress(userId, selectedAsset, activeNetwork);
+  const qrUri = `https://api.qrserver.com/v1/create-qr-code/?size=210x210&bgcolor=121722&color=F7931A&data=${encodeURIComponent(
+    depositAddress,
+  )}`;
+
+  const currentBalance = balances[selectedAsset.symbol] ?? 0;
+  const usdValue = currentBalance * selectedAsset.priceUsd;
+
+  async function handleShareAddress() {
+    await Share.share({
+      message: `My YTCash ${selectedAsset.symbol} (${activeNetwork}) address:\n${depositAddress}`,
+    }).catch(() => {});
+  }
+
+  async function handleSaveCustomAddress() {
+    if (customAddrInput.trim().length < 8) {
+      Alert.alert('Invalid address', 'Enter a valid blockchain wallet address.');
       return;
     }
-    setSaving(true);
+    await saveCustomAddress(userId, addrKey, customAddrInput.trim());
+    setEditingAddress(false);
+    setCustomAddrInput('');
+    await load();
+    Alert.alert('Saved', `${selectedAsset.symbol} (${activeNetwork}) deposit address updated.`);
+  }
+
+  async function handleWithdraw() {
+    const amt = Number(sendAmountText);
+    if (!amt || amt <= 0) {
+      Alert.alert('Invalid amount', `Enter the ${selectedAsset.symbol} amount to send.`);
+      return;
+    }
+    if (amt > currentBalance) {
+      Alert.alert(
+        'Insufficient balance',
+        `You have ${currentBalance} ${selectedAsset.symbol} available.`,
+      );
+      return;
+    }
+    if (recipientAddress.trim().length < 6) {
+      Alert.alert(
+        'Destination required',
+        selectedAsset.category === 'coin_stocks'
+          ? 'Enter the recipient YTCash Wallet ID or email.'
+          : `Enter a valid ${activeNetwork} wallet address.`,
+      );
+      return;
+    }
+
+    setBusy(true);
     try {
-      await savePayoutAccount(editing, accountName.trim(), accountNumber);
-      setEditing(null);
+      const { balances: nextBal } = await recordAssetWithdrawal({
+        userId,
+        asset: selectedAsset,
+        network: activeNetwork,
+        amount: amt,
+        toAddress: recipientAddress.trim(),
+      });
+      setBalances(nextBal);
+      setSendAmountText('');
+      setRecipientAddress('');
       await load();
-    } catch (e) {
-      Alert.alert('Could not save', directErrorMessage(e));
+      Alert.alert(
+        'Withdrawal Submitted',
+        `Sent ${amt} ${selectedAsset.symbol} on ${activeNetwork}.`,
+      );
+    } catch (e: any) {
+      Alert.alert('Could not send', e?.message ?? 'Try again.');
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   }
 
-  async function handleRemove(method: PayMethod) {
-    setSaving(true);
+  async function handleClaimCoinStock() {
+    setBusy(true);
     try {
-      await removePayoutAccount(method);
-      setEditing(null);
+      const targetSymbol =
+        selectedAsset.category === 'coin_stocks' ? selectedAsset.symbol : 'YTC-STK';
+      const { earned, balances: nextBal } = await claimDailyCoinStockReward(userId, targetSymbol);
+      setBalances(nextBal);
       await load();
-    } catch (e) {
-      Alert.alert('Could not remove', directErrorMessage(e));
+      Alert.alert(
+        'Coin Stocks Earned!',
+        `You earned +${earned} ${targetSymbol} shares for using YTCash today.`,
+      );
+    } catch (e: any) {
+      Alert.alert('Daily Reward', e?.message ?? 'Try again tomorrow.');
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   }
-
-  const list = tab === 'send' ? sent : assigned;
-  const openAssigned = assigned.filter(isDirectOpen).length;
-  const listed = available && accounts.length > 0;
 
   return (
-    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScreenHeader title="Direct Pay" />
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScreenHeader title="Transfer Assets" />
 
+      {/* Top Tabs: Send Assets vs Receive Assets */}
       <View style={styles.tabs}>
-        {(['send', 'deliver'] as const).map((key) => {
+        {(['send', 'receive'] as const).map((key) => {
           const selected = tab === key;
           return (
             <TouchableOpacity
@@ -164,14 +237,14 @@ export default function DirectPayHubScreen() {
               activeOpacity={0.8}
               accessibilityRole="tab"
               accessibilityState={{ selected }}>
+              <Ionicons
+                name={key === 'send' ? 'arrow-up-circle-outline' : 'arrow-down-circle-outline'}
+                size={16}
+                color={selected ? BitcoinColors.orange : BitcoinColors.textSecondary}
+              />
               <Text style={[styles.tabText, selected && styles.tabTextSelected]}>
-                {key === 'send' ? 'Send cash' : 'Deliver cash'}
+                {key === 'send' ? 'Send Assets' : 'Receive Assets'}
               </Text>
-              {key === 'deliver' && openAssigned > 0 && (
-                <View style={styles.tabBadge}>
-                  <Text style={styles.tabBadgeText}>{openAssigned}</Text>
-                </View>
-              )}
             </TouchableOpacity>
           );
         })}
@@ -181,158 +254,339 @@ export default function DirectPayHubScreen() {
         contentContainerStyle={styles.scroll}
         keyboardShouldPersistTaps="handled"
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={BitcoinColors.orange} colors={[BitcoinColors.orange]} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={BitcoinColors.orange}
+            colors={[BitcoinColors.orange]}
+          />
         }>
-        {tab === 'send' ? (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Pay the partner yourself, after delivery</Text>
-            {STEPS.map((step, i) => (
-              <View key={step} style={styles.stepRow}>
-                <View style={styles.stepBadge}>
-                  <Text style={styles.stepNumber}>{i + 1}</Text>
+        {/* Asset Category Selector: Cryptocurrency | Tokens | Coin Stocks */}
+        <Text style={styles.sectionLabel}>ASSET TYPE</Text>
+        <View style={styles.categoryRow}>
+          {CATEGORY_OPTIONS.map((opt) => {
+            const active = category === opt.id;
+            return (
+              <TouchableOpacity
+                key={opt.id}
+                style={[styles.catBtn, active && styles.catBtnActive]}
+                onPress={() => handleSelectCategory(opt.id)}
+                activeOpacity={0.85}>
+                <Ionicons
+                  name={opt.icon}
+                  size={16}
+                  color={active ? BitcoinColors.orange : BitcoinColors.textSecondary}
+                />
+                <Text style={[styles.catText, active && styles.catTextActive]}>{opt.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Asset Selector */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.assetChipsRow}>
+          {categoryAssets.map((asset) => {
+            const active = asset.id === selectedAsset.id;
+            const bal = balances[asset.symbol] ?? 0;
+            return (
+              <TouchableOpacity
+                key={asset.id}
+                style={[styles.assetChip, active && styles.assetChipActive]}
+                onPress={() => handleSelectAsset(asset)}
+                activeOpacity={0.85}>
+                <View style={[styles.assetDot, { backgroundColor: asset.iconColor }]} />
+                <View>
+                  <Text style={[styles.assetSymbol, active && styles.assetSymbolActive]}>
+                    {asset.symbol}
+                  </Text>
+                  <Text style={styles.assetBal}>
+                    {bal} {asset.category === 'coin_stocks' ? 'shares' : ''}
+                  </Text>
                 </View>
-                <Text style={styles.stepText}>{step}</Text>
-              </View>
-            ))}
-            <TouchableOpacity style={styles.primaryBtn} onPress={() => router.push('/direct/new')} activeOpacity={0.85} accessibilityRole="button">
-              <LinearGradient colors={Brand.gradientButton} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.primaryBtnGradient}>
-                <Ionicons name="map" size={16} color="#07090E" />
-                <Text style={styles.primaryBtnText}>Find a partner</Text>
-              </LinearGradient>
-            </TouchableOpacity>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        {/* Balance + Network Card */}
+        <View style={styles.card}>
+          <View style={styles.rowBetween}>
+            <View>
+              <Text style={styles.assetTitle}>{selectedAsset.name}</Text>
+              <Text style={styles.assetDesc}>{selectedAsset.description}</Text>
+            </View>
+            <View style={{ alignItems: 'flex-end' }}>
+              <Text style={styles.balanceNum}>
+                {currentBalance} {selectedAsset.symbol}
+              </Text>
+              <Text style={styles.balanceUsd}>≈ ${usdValue.toFixed(2)} USD</Text>
+            </View>
           </View>
-        ) : (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Where senders pay you</Text>
-            <Text style={styles.cardBody}>
-              Add at least one account to receive Direct Pay requests. Senders see the number only after you have
-              handed over the cash.
-            </Text>
 
-            {PAY_METHODS.map((method) => {
-              const account = accounts.find((a) => a.method === method);
-              const isEditing = editing === method;
+          <Text style={styles.networkLabel}>
+            {category === 'coin_stocks' ? 'LEDGER' : 'BLOCKCHAIN NETWORK'}
+          </Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.networkRow}>
+            {selectedAsset.networks.map((net) => {
+              const active = net === activeNetwork;
               return (
-                <View key={method} style={styles.accountBlock}>
-                  <TouchableOpacity
-                    style={styles.accountRow}
-                    onPress={() => (isEditing ? setEditing(null) : startEdit(method))}
-                    activeOpacity={0.8}
-                    accessibilityRole="button">
-                    <View style={styles.flex}>
-                      <Text style={styles.accountMethod}>
-                        {PAY_METHOD_LABEL[method]}
-                        <Text style={styles.accountCurrency}>{`  ${METHOD_CURRENCY[method]}`}</Text>
-                      </Text>
-                      <Text style={styles.accountDetail}>
-                        {account ? `${account.account_name} · ${account.account_number}` : 'Not added'}
-                      </Text>
-                    </View>
-                    <Text style={styles.accountAction}>{isEditing ? 'Close' : account ? 'Edit' : 'Add'}</Text>
-                  </TouchableOpacity>
-
-                  {isEditing && (
-                    <View style={styles.accountForm}>
-                      <TextInput
-                        style={styles.input}
-                        value={accountName}
-                        onChangeText={setAccountName}
-                        placeholder="Name on the account"
-                        placeholderTextColor={BitcoinColors.textMuted}
-                        autoCapitalize="words"
-                        maxLength={80}
-                      />
-                      <TextInput
-                        style={[styles.input, styles.inputSpaced]}
-                        value={accountNumber}
-                        onChangeText={(t) =>
-                          setAccountNumber(PAY_ACCOUNT_FIELD[method].kind === 'upi' ? t.trim() : t.replace(/[^\d\s+-]/g, ''))
-                        }
-                        placeholder={PAY_ACCOUNT_FIELD[method].placeholder}
-                        placeholderTextColor={BitcoinColors.textMuted}
-                        keyboardType={PAY_ACCOUNT_FIELD[method].kind === 'upi' ? 'email-address' : 'number-pad'}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        maxLength={PAY_ACCOUNT_FIELD[method].kind === 'upi' ? 130 : 24}
-                      />
-                      <View style={styles.formButtons}>
-                        {account && (
-                          <TouchableOpacity style={styles.removeBtn} onPress={() => handleRemove(method)} disabled={saving} activeOpacity={0.8}>
-                            <Text style={styles.removeText}>Remove</Text>
-                          </TouchableOpacity>
-                        )}
-                        <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={saving} activeOpacity={0.85}>
-                          {saving && <ActivityIndicator size="small" color="#07090E" />}
-                          <Text style={styles.saveText}>Save</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  )}
-                </View>
+                <TouchableOpacity
+                  key={net}
+                  style={[styles.netChip, active && styles.netChipActive]}
+                  onPress={() => setSelectedNetwork(net)}
+                  activeOpacity={0.8}>
+                  <Text style={[styles.netText, active && styles.netTextActive]}>{net}</Text>
+                </TouchableOpacity>
               );
             })}
+          </ScrollView>
+        </View>
 
-            <View style={styles.listedRow}>
-              <Ionicons
-                name={listed ? 'checkmark-circle' : 'information-circle-outline'}
-                size={16}
-                color={listed ? BitcoinColors.green : BitcoinColors.orange}
-              />
-              <Text style={styles.listedText}>
-                {listed
-                  ? 'You are listed. Senders near your area can see your first name and general area on the map.'
-                  : accounts.length === 0
-                  ? 'Add an account above to be listed.'
-                  : 'Turn on "Deliver cash near me" to be listed.'}
+        {/* Coin Stocks Earn Banner */}
+        {category === 'coin_stocks' && (
+          <View style={styles.earnCard}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.earnTitle}>Earn Coin Stocks Using YTCash</Text>
+              <Text style={styles.earnSub}>
+                Just like company stock, earn shares daily and on every P2P exchange, cash scan, or
+                asset transfer.
               </Text>
-              {!available && (
-                <TouchableOpacity onPress={() => router.push('/p2p')} accessibilityRole="button">
-                  <Text style={styles.linkText}>Open</Text>
-                </TouchableOpacity>
-              )}
             </View>
+            <TouchableOpacity
+              style={styles.claimBtn}
+              onPress={handleClaimCoinStock}
+              disabled={busy}
+              activeOpacity={0.85}>
+              {busy ? (
+                <ActivityIndicator size="small" color="#07090E" />
+              ) : (
+                <Text style={styles.claimBtnText}>Claim Daily</Text>
+              )}
+            </TouchableOpacity>
           </View>
         )}
 
-        <Text style={styles.sectionTitle}>{tab === 'send' ? 'YOUR DELIVERIES' : 'REQUESTS FOR YOU'}</Text>
+        {/* Main Action Card: Receive Assets (QR Deposit) vs Send Assets (Withdraw) */}
+        {tab === 'receive' ? (
+          <View style={styles.card}>
+            <View style={styles.rowBetween}>
+              <Text style={styles.cardTitle}>
+                {category === 'coin_stocks'
+                  ? `Receive ${selectedAsset.symbol} Shares`
+                  : `Deposit ${selectedAsset.symbol} (${activeNetwork})`}
+              </Text>
+              {category !== 'coin_stocks' && (
+                <TouchableOpacity
+                  onPress={() => {
+                    setCustomAddrInput(depositAddress);
+                    setEditingAddress((v) => !v);
+                  }}
+                  activeOpacity={0.8}>
+                  <Text style={styles.linkText}>{editingAddress ? 'Cancel' : 'Edit Address'}</Text>
+                </TouchableOpacity>
+              )}
+            </View>
 
-        {loading ? (
-          <ActivityIndicator color={BitcoinColors.orange} style={styles.loader} />
-        ) : loadError ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>{loadError}</Text>
-          </View>
-        ) : list.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>{tab === 'send' ? 'No deliveries yet.' : 'No requests yet.'}</Text>
+            <View style={styles.qrBox}>
+              <Image source={{ uri: qrUri }} style={styles.qrImage} contentFit="contain" />
+            </View>
+
+            <Text style={styles.addrLabel}>
+              {category === 'coin_stocks' ? 'YTCASH COIN STOCK WALLET ID' : 'WALLET DEPOSIT ADDRESS'}
+            </Text>
+            <View style={styles.addrBox}>
+              <Text style={styles.addrText} selectable>
+                {depositAddress}
+              </Text>
+            </View>
+
+            {editingAddress && (
+              <View style={styles.editAddrWrap}>
+                <TextInput
+                  style={styles.input}
+                  value={customAddrInput}
+                  onChangeText={setCustomAddrInput}
+                  placeholder={`Paste your ${selectedAsset.symbol} address`}
+                  placeholderTextColor={BitcoinColors.textMuted}
+                />
+                <TouchableOpacity
+                  style={styles.saveAddrBtn}
+                  onPress={handleSaveCustomAddress}
+                  activeOpacity={0.85}>
+                  <Text style={styles.saveAddrText}>Save Deposit Address</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={styles.primaryBtn}
+              onPress={handleShareAddress}
+              activeOpacity={0.85}>
+              <LinearGradient
+                colors={Brand.gradientButton}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.primaryBtnGradient}>
+                <Ionicons name="share-outline" size={16} color="#07090E" />
+                <Text style={styles.primaryBtnText}>Share / Copy Wallet Address</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+
+            <Text style={styles.warningNote}>
+              {category === 'coin_stocks'
+                ? 'Share this QR or ID with other YTCash users to receive Coin Stock shares.'
+                : `Only send ${selectedAsset.symbol} over the ${activeNetwork} network to this address.`}
+            </Text>
           </View>
         ) : (
-          list.map((order) => {
-            const role = tab === 'send' ? 'sender' : 'partner';
-            const color = directStatusColor(order);
-            return (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>
+              {category === 'coin_stocks'
+                ? `Send ${selectedAsset.symbol} Shares`
+                : `Withdraw / Send ${selectedAsset.symbol}`}
+            </Text>
+            <Text style={styles.assetDesc}>
+              {category === 'coin_stocks'
+                ? 'Transfer your earned Coin Stock shares to another YTCash user.'
+                : `Withdraw ${selectedAsset.symbol} to an external ${activeNetwork} wallet address.`}
+            </Text>
+
+            <Text style={styles.inputLabel}>
+              {category === 'coin_stocks'
+                ? 'RECIPIENT YTCASH WALLET ID OR EMAIL'
+                : `RECIPIENT ${activeNetwork.toUpperCase()} ADDRESS`}
+            </Text>
+            <TextInput
+              style={styles.input}
+              value={recipientAddress}
+              onChangeText={setRecipientAddress}
+              placeholder={
+                category === 'coin_stocks'
+                  ? 'ytc-stk-... or user@email.com'
+                  : `Paste ${selectedAsset.symbol} (${activeNetwork}) address`
+              }
+              placeholderTextColor={BitcoinColors.textMuted}
+              autoCapitalize="none"
+            />
+
+            <View style={styles.rowBetween}>
+              <Text style={styles.inputLabel}>AMOUNT ({selectedAsset.symbol})</Text>
               <TouchableOpacity
-                key={order.id}
-                style={styles.row}
-                onPress={() => router.push({ pathname: '/direct/[id]', params: { id: order.id } })}
-                activeOpacity={0.75}
-                accessibilityRole="button">
-                <View style={styles.flex}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>
-                    {role === 'sender' ? `To ${order.receiver_name}` : `Cash for ${order.receiver_name}`}
-                  </Text>
-                  <Text style={[styles.rowStatus, { color }]} numberOfLines={1}>
-                    {directStatusLabel(order, role)}
-                  </Text>
-                </View>
-                <View style={styles.rowRight}>
-                  <Text style={styles.rowAmount}>{formatDirectAmount(order.amount, order.currency)}</Text>
-                  <Text style={styles.rowMeta}>{PAY_METHOD_LABEL[order.method]}</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={18} color={BitcoinColors.textMuted} />
+                onPress={() => setSendAmountText(String(currentBalance))}
+                activeOpacity={0.8}>
+                <Text style={styles.linkText}>Max: {currentBalance}</Text>
               </TouchableOpacity>
-            );
-          })
+            </View>
+            <TextInput
+              style={styles.input}
+              value={sendAmountText}
+              onChangeText={(t) => setSendAmountText(t.replace(/[^0-9.]/g, ''))}
+              keyboardType="decimal-pad"
+              placeholder="0.00"
+              placeholderTextColor={BitcoinColors.textMuted}
+            />
+
+            {recipientAddress.trim().length >= 8 && (
+              <View style={styles.miniQrRow}>
+                <Image
+                  source={{
+                    uri: `https://api.qrserver.com/v1/create-qr-code/?size=96x96&bgcolor=121722&color=06B6D4&data=${encodeURIComponent(
+                      recipientAddress.trim(),
+                    )}`,
+                  }}
+                  style={styles.miniQr}
+                  contentFit="contain"
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.miniQrTitle}>Destination QR Preview</Text>
+                  <Text style={styles.miniQrSub} numberOfLines={2}>
+                    {recipientAddress.trim()}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={styles.primaryBtn}
+              onPress={handleWithdraw}
+              disabled={busy}
+              activeOpacity={0.85}>
+              <LinearGradient
+                colors={Brand.gradientButton}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.primaryBtnGradient}>
+                {busy ? (
+                  <ActivityIndicator color="#07090E" />
+                ) : (
+                  <>
+                    <Ionicons name="paper-plane" size={16} color="#07090E" />
+                    <Text style={styles.primaryBtnText}>
+                      {category === 'coin_stocks'
+                        ? `Send ${selectedAsset.symbol}`
+                        : `Withdraw ${selectedAsset.symbol}`}
+                    </Text>
+                  </>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Recent Asset Activity */}
+        <Text style={styles.sectionTitle}>RECENT ASSET ACTIVITY</Text>
+        {loading ? (
+          <ActivityIndicator color={BitcoinColors.orange} style={{ marginTop: 16 }} />
+        ) : transfers.length === 0 ? (
+          <View style={styles.emptyCard}>
+            <Ionicons name="wallet-outline" size={24} color={BitcoinColors.orange} />
+            <Text style={styles.emptyText}>
+              No asset transfers yet. Deposit via QR, withdraw to a wallet, or claim daily Coin
+              Stocks above.
+            </Text>
+          </View>
+        ) : (
+          transfers.map((tr) => (
+            <View key={tr.id} style={styles.txRow}>
+              <View style={styles.txIcon}>
+                <Ionicons
+                  name={
+                    tr.direction === 'earn'
+                      ? 'trending-up'
+                      : tr.direction === 'send'
+                      ? 'arrow-up'
+                      : 'arrow-down'
+                  }
+                  size={16}
+                  color={tr.direction === 'send' ? BitcoinColors.red : BitcoinColors.green}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.txTitle}>
+                  {tr.direction === 'earn'
+                    ? `Earned ${tr.amount} ${tr.symbol}`
+                    : tr.direction === 'send'
+                    ? `Sent ${tr.amount} ${tr.symbol}`
+                    : `Received ${tr.amount} ${tr.symbol}`}
+                </Text>
+                <Text style={styles.txSub} numberOfLines={1}>
+                  {tr.network} • {tr.address}
+                </Text>
+              </View>
+              <Text style={styles.txDate}>
+                {new Date(tr.createdAt).toLocaleDateString('en-US', {
+                  month: 'short',
+                  day: 'numeric',
+                })}
+              </Text>
+            </View>
+          ))
         )}
       </ScrollView>
     </KeyboardAvoidingView>
@@ -341,130 +595,248 @@ export default function DirectPayHubScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: BitcoinColors.darkBg },
-  flex: { flex: 1 },
   tabs: {
     flexDirection: 'row',
     marginHorizontal: 20,
-    marginTop: 16,
+    marginTop: 14,
     padding: 4,
     borderRadius: 14,
     backgroundColor: BitcoinColors.cardBg,
     borderWidth: 1,
     borderColor: BitcoinColors.border,
   },
-  tab: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingVertical: 10, borderRadius: 10, gap: 6 },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    gap: 6,
+  },
   tabSelected: { backgroundColor: 'rgba(247, 147, 26, 0.16)' },
   tabText: { fontSize: 13, fontWeight: '700', color: BitcoinColors.textSecondary },
   tabTextSelected: { color: BitcoinColors.orange },
-  tabBadge: {
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    paddingHorizontal: 5,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: BitcoinColors.orange,
+  scroll: { padding: 20, paddingBottom: 44, gap: 14 },
+  sectionLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: BitcoinColors.textMuted,
+    letterSpacing: 1,
   },
-  tabBadgeText: { fontSize: 11, fontWeight: '800', color: '#07090E' },
-  scroll: { padding: 20, paddingBottom: 40 },
-  loader: { marginTop: 24 },
+  categoryRow: { flexDirection: 'row', gap: 8 },
+  catBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    backgroundColor: BitcoinColors.cardBg,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+  },
+  catBtnActive: {
+    borderColor: BitcoinColors.orange,
+    backgroundColor: 'rgba(247, 147, 26, 0.14)',
+  },
+  catText: { fontSize: 11, fontWeight: '800', color: BitcoinColors.textSecondary },
+  catTextActive: { color: BitcoinColors.orange },
+  assetChipsRow: { gap: 8, paddingVertical: 2 },
+  assetChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 14,
+    backgroundColor: BitcoinColors.cardBg,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+  },
+  assetChipActive: {
+    borderColor: BitcoinColors.orange,
+    backgroundColor: 'rgba(247, 147, 26, 0.12)',
+  },
+  assetDot: { width: 10, height: 10, borderRadius: 5 },
+  assetSymbol: { fontSize: 13, fontWeight: '800', color: '#FFFFFF' },
+  assetSymbolActive: { color: BitcoinColors.orange },
+  assetBal: { fontSize: 10, color: BitcoinColors.textMuted },
   card: {
     backgroundColor: BitcoinColors.cardBg,
     borderRadius: 18,
-    padding: 18,
+    padding: 16,
     borderWidth: 1,
     borderColor: BitcoinColors.border,
   },
-  cardTitle: { fontSize: 15, fontWeight: '800', color: '#FFFFFF', marginBottom: 10 },
-  cardBody: { fontSize: 12, lineHeight: 18, color: BitcoinColors.textSecondary, marginBottom: 8 },
-  stepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 10 },
-  stepBadge: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(247, 147, 26, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(247, 147, 26, 0.4)',
+  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
+  assetTitle: { fontSize: 16, fontWeight: '900', color: '#FFFFFF' },
+  assetDesc: { fontSize: 12, color: BitcoinColors.textSecondary, marginTop: 3, lineHeight: 17 },
+  balanceNum: { fontSize: 15, fontWeight: '900', color: '#FFFFFF' },
+  balanceUsd: { fontSize: 11, color: BitcoinColors.textMuted, marginTop: 2 },
+  networkLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: BitcoinColors.textMuted,
+    letterSpacing: 0.9,
+    marginTop: 14,
+    marginBottom: 8,
   },
-  stepNumber: { fontSize: 11, fontWeight: '800', color: BitcoinColors.orange },
-  stepText: { flex: 1, fontSize: 13, lineHeight: 19, color: '#E2E8F0' },
-  primaryBtn: { marginTop: 8, borderRadius: 14, overflow: 'hidden' },
-  primaryBtnGradient: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingVertical: 13, gap: 8 },
-  primaryBtnText: { fontSize: 14, fontWeight: '800', color: '#07090E' },
-  accountBlock: { borderTopWidth: 1, borderTopColor: BitcoinColors.border },
-  accountRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 12 },
-  accountMethod: { fontSize: 14, fontWeight: '700', color: '#FFFFFF' },
-  accountCurrency: { fontSize: 11, fontWeight: '700', color: BitcoinColors.textMuted },
-  accountDetail: { fontSize: 12, color: BitcoinColors.textSecondary, marginTop: 2 },
-  accountAction: { fontSize: 12, fontWeight: '800', color: BitcoinColors.orange },
-  accountForm: { paddingBottom: 14 },
-  input: {
+  networkRow: { gap: 8 },
+  netChip: {
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 999,
     backgroundColor: BitcoinColors.darkBg,
-    borderRadius: 14,
     borderWidth: 1,
     borderColor: BitcoinColors.border,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-    color: '#FFFFFF',
   },
-  inputSpaced: { marginTop: 8 },
-  formButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 10 },
-  removeBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(244, 63, 94, 0.5)' },
-  removeText: { fontSize: 13, fontWeight: '800', color: BitcoinColors.red },
-  saveBtn: {
+  netChipActive: {
+    borderColor: BitcoinColors.cyan,
+    backgroundColor: 'rgba(6, 182, 212, 0.14)',
+  },
+  netText: { fontSize: 11, fontWeight: '700', color: BitcoinColors.textSecondary },
+  netTextActive: { color: BitcoinColors.cyan },
+  earnCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 24,
-    paddingVertical: 10,
+    gap: 12,
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  earnTitle: { fontSize: 13, fontWeight: '800', color: BitcoinColors.green },
+  earnSub: { fontSize: 11, color: BitcoinColors.textSecondary, marginTop: 2, lineHeight: 16 },
+  claimBtn: {
+    backgroundColor: BitcoinColors.green,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  claimBtnText: { fontSize: 12, fontWeight: '800', color: '#07090E' },
+  cardTitle: { fontSize: 15, fontWeight: '800', color: '#FFFFFF' },
+  linkText: { fontSize: 12, fontWeight: '800', color: BitcoinColors.cyan },
+  qrBox: {
+    alignSelf: 'center',
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: BitcoinColors.cardBg,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+  },
+  qrImage: { width: 190, height: 190 },
+  addrLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: BitcoinColors.textMuted,
+    letterSpacing: 0.9,
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  addrBox: {
+    padding: 12,
     borderRadius: 12,
-    backgroundColor: BitcoinColors.orange,
+    backgroundColor: BitcoinColors.darkBg,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
   },
-  saveText: { fontSize: 13, fontWeight: '800', color: '#07090E' },
-  listedRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: BitcoinColors.border,
+  addrText: { fontSize: 12, color: '#FFFFFF', fontWeight: '700' },
+  editAddrWrap: { marginTop: 10, gap: 8 },
+  saveAddrBtn: {
+    backgroundColor: BitcoinColors.cyan,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
   },
-  listedText: { flex: 1, fontSize: 12, lineHeight: 17, color: BitcoinColors.textSecondary },
-  linkText: { fontSize: 12, fontWeight: '800', color: BitcoinColors.orange },
-  sectionTitle: {
-    fontSize: 12,
+  saveAddrText: { fontSize: 12, fontWeight: '800', color: '#07090E' },
+  inputLabel: {
+    fontSize: 10,
     fontWeight: '800',
     color: BitcoinColors.textSecondary,
-    letterSpacing: 1.1,
-    marginTop: 26,
-    marginBottom: 12,
+    letterSpacing: 0.8,
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  input: {
+    backgroundColor: BitcoinColors.darkBg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    fontSize: 13,
+    color: '#FFFFFF',
+  },
+  miniQrRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: BitcoinColors.darkBg,
+    borderWidth: 1,
+    borderColor: BitcoinColors.border,
+  },
+  miniQr: { width: 52, height: 52, borderRadius: 6 },
+  miniQrTitle: { fontSize: 12, fontWeight: '800', color: BitcoinColors.cyan },
+  miniQrSub: { fontSize: 11, color: BitcoinColors.textSecondary, marginTop: 2 },
+  primaryBtn: { marginTop: 16, borderRadius: 12, overflow: 'hidden' },
+  primaryBtnGradient: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 13,
+    gap: 8,
+  },
+  primaryBtnText: { fontSize: 14, fontWeight: '800', color: '#07090E' },
+  warningNote: {
+    fontSize: 11,
+    color: BitcoinColors.textMuted,
+    textAlign: 'center',
+    marginTop: 10,
+  },
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: BitcoinColors.textSecondary,
+    letterSpacing: 1,
+    marginTop: 6,
   },
   emptyCard: {
     backgroundColor: BitcoinColors.cardBg,
-    borderRadius: 18,
+    borderRadius: 16,
     padding: 20,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: BitcoinColors.border,
+    gap: 8,
   },
-  emptyText: { fontSize: 13, lineHeight: 19, color: BitcoinColors.textSecondary, textAlign: 'center' },
-  row: {
+  emptyText: { fontSize: 12, color: BitcoinColors.textSecondary, textAlign: 'center', lineHeight: 18 },
+  txRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 14,
     backgroundColor: BitcoinColors.cardBg,
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 10,
     borderWidth: 1,
     borderColor: BitcoinColors.border,
-    gap: 12,
   },
-  rowTitle: { fontSize: 14, fontWeight: '700', color: '#FFFFFF' },
-  rowStatus: { fontSize: 12, fontWeight: '700', marginTop: 2 },
-  rowRight: { alignItems: 'flex-end' },
-  rowAmount: { fontSize: 14, fontWeight: '800', color: '#FFFFFF' },
-  rowMeta: { fontSize: 11, color: BitcoinColors.textMuted, marginTop: 2 },
+  txIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: BitcoinColors.darkBg,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  txTitle: { fontSize: 13, fontWeight: '800', color: '#FFFFFF' },
+  txSub: { fontSize: 11, color: BitcoinColors.textMuted, marginTop: 2 },
+  txDate: { fontSize: 11, color: BitcoinColors.textSecondary, fontWeight: '700' },
 });
